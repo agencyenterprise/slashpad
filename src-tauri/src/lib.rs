@@ -5,6 +5,15 @@ use tauri::{
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use include_dir::{include_dir, Dir};
 
+#[cfg(target_os = "macos")]
+use tauri_nspanel::{
+    tauri_panel,
+    ManagerExt as PanelManagerExt,
+    WebviewWindowExt as PanelWindowExt,
+    Panel,
+    builder::CollectionBehavior,
+};
+
 static SKILL_CREATOR_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/bundled-skills/skill-creator");
 
 /// Seed a bundled skill into the user's skills directory if it doesn't already exist.
@@ -33,20 +42,26 @@ fn extract_dir(dir: &Dir<'static>, dest: &std::path::Path) -> std::io::Result<()
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+tauri_panel! {
+    panel!(PalettePanel {
+        config: {
+            can_become_key_window: true,
+            is_floating_panel: true
+        }
+    })
+}
+
 /// Reposition the palette window centered on whichever monitor the cursor is on.
-/// Window height is dynamic — we only center horizontally and position ~25% from top.
 fn center_on_cursor_monitor(window: &WebviewWindow) -> Result<(), String> {
     let monitors = window.available_monitors().map_err(|e| e.to_string())?;
     let cursor = window.cursor_position().map_err(|e| e.to_string())?;
 
-    // Find which monitor contains the cursor
     let target_monitor = monitors
         .iter()
         .find(|m| {
             let pos = m.position();
             let size = m.size();
-
-            // Monitor bounds in physical pixels
             let mx = pos.x as f64;
             let my = pos.y as f64;
             let mw = size.width as f64;
@@ -62,10 +77,8 @@ fn center_on_cursor_monitor(window: &WebviewWindow) -> Result<(), String> {
     if let Some(monitor) = target_monitor {
         let mon_pos = monitor.position();
         let mon_size = monitor.size();
-
         let win_size = window.outer_size().map_err(|e| e.to_string())?;
 
-        // Center horizontally on the monitor, position ~22% from top vertically
         let x = mon_pos.x as f64 + (mon_size.width as f64 - win_size.width as f64) / 2.0;
         let y = mon_pos.y as f64 + (mon_size.height as f64 * 0.22);
 
@@ -78,12 +91,50 @@ fn center_on_cursor_monitor(window: &WebviewWindow) -> Result<(), String> {
 }
 
 fn toggle_palette(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(panel) = app.get_webview_panel("palette") {
+            if panel.is_visible() {
+                panel.hide();
+                let _ = app.emit("palette-hidden", ());
+            } else {
+                if let Some(window) = app.get_webview_window("palette") {
+                    let _ = center_on_cursor_monitor(&window);
+
+                    let ns_win = window.ns_window().unwrap() as cocoa::base::id;
+                    unsafe {
+                        use cocoa::appkit::NSWindow;
+                        use cocoa::base::NO;
+
+                        ns_win.setLevel_(8); // NSModalPanelWindowLevel
+                        ns_win.setHidesOnDeactivate_(NO);
+                        let behavior: u64 = (1 << 0) | (1 << 6) | (1 << 8);
+                        ns_win.setCollectionBehavior_(std::mem::transmute(behavior));
+                    }
+                }
+
+                panel.show();
+                panel.order_front_regardless();
+                panel.make_key_window();
+
+                unsafe {
+                    use cocoa::appkit::NSApplication;
+                    use cocoa::base::YES;
+                    cocoa::appkit::NSApp().activateIgnoringOtherApps_(YES);
+                }
+
+                let _ = app.emit("palette-shown", ());
+            }
+            return;
+        }
+    }
+
+    // Non-macOS fallback
     if let Some(window) = app.get_webview_window("palette") {
         if window.is_visible().unwrap_or(false) {
             let _ = window.hide();
             let _ = app.emit("palette-hidden", ());
         } else {
-            // Reposition before showing
             let _ = center_on_cursor_monitor(&window);
             let _ = window.show();
             let _ = window.set_focus();
@@ -94,6 +145,14 @@ fn toggle_palette(app: &AppHandle) {
 
 #[tauri::command]
 async fn hide_palette(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(panel) = app.get_webview_panel("palette") {
+            panel.hide();
+            return Ok(());
+        }
+    }
+
     if let Some(window) = app.get_webview_window("palette") {
         window.hide().map_err(|e| e.to_string())?;
     }
@@ -130,10 +189,17 @@ async fn get_project_dir() -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_fs::init());
+
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.plugin(tauri_nspanel::init());
+    }
+
+    builder
         .invoke_handler(tauri::generate_handler![
             hide_palette,
             resize_palette,
@@ -141,7 +207,6 @@ pub fn run() {
             get_project_dir,
         ])
         .setup(|app| {
-            // Register global shortcut with handler: Option+Space (macOS) / Alt+Space (Windows/Linux)
             let shortcut: Shortcut = "Ctrl+Space".parse().unwrap();
 
             let handle = app.handle().clone();
@@ -160,20 +225,55 @@ pub fn run() {
             // Listen for blur events from the frontend to auto-hide
             let handle2 = app.handle().clone();
             app.listen("palette-blur", move |_| {
+                #[cfg(target_os = "macos")]
+                {
+                    if let Ok(panel) = handle2.get_webview_panel("palette") {
+                        panel.hide();
+                        return;
+                    }
+                }
+
                 if let Some(window) = handle2.get_webview_window("palette") {
                     let _ = window.hide();
                 }
             });
 
-            // Make webview background transparent on macOS
+            // macOS: convert window to NSPanel for full-screen overlay
             #[cfg(target_os = "macos")]
             {
-                use cocoa::appkit::{NSColor, NSWindow};
-                use cocoa::base::{id, nil};
+                unsafe {
+                    use cocoa::appkit::{NSApplication, NSApplicationActivationPolicyAccessory};
+                    cocoa::appkit::NSApp().setActivationPolicy_(NSApplicationActivationPolicyAccessory);
+                }
 
                 if let Some(window) = app.get_webview_window("palette") {
-                    let ns_window = window.ns_window().unwrap() as id;
+                    let _ = window.to_panel::<PalettePanel>();
+
+                    if let Ok(panel) = app.get_webview_panel("palette") {
+                        panel.set_level(8); // NSModalPanelWindowLevel
+                        panel.set_floating_panel(true);
+
+                        let behavior = CollectionBehavior::new()
+                            .can_join_all_spaces()
+                            .ignores_cycle()
+                            .full_screen_auxiliary();
+                        panel.set_collection_behavior(behavior.value());
+                    }
+
+                    let ns_window = window.ns_window().unwrap() as cocoa::base::id;
                     unsafe {
+                        use cocoa::appkit::{NSColor, NSWindow};
+                        use cocoa::base::nil;
+                        use objc::{msg_send, sel, sel_impl};
+
+                        // NSNonactivatingPanelMask — critical for full-screen overlay
+                        let current_mask: u64 = msg_send![ns_window, styleMask];
+                        let _: () = msg_send![ns_window, setStyleMask: current_mask | (1u64 << 7)];
+
+                        ns_window.setLevel_(8);
+                        let behavior: u64 = (1 << 0) | (1 << 6) | (1 << 8);
+                        ns_window.setCollectionBehavior_(std::mem::transmute(behavior));
+
                         let bg_color = NSColor::colorWithRed_green_blue_alpha_(
                             nil, 0.0, 0.0, 0.0, 0.0,
                         );
@@ -187,7 +287,6 @@ pub fn run() {
             let skills_dir = format!("{}/.launchpad/.claude/skills", home);
             let _ = std::fs::create_dir_all(&skills_dir);
 
-            // Seed bundled skills on first run
             seed_bundled_skill(&skills_dir, "skill-creator", &SKILL_CREATOR_DIR);
 
             Ok(())
