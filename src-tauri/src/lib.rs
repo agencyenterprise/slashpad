@@ -108,6 +108,13 @@ async fn get_skills_dir() -> Result<String, String> {
     Ok(dir)
 }
 
+#[tauri::command]
+async fn get_project_dir() -> Result<String, String> {
+    std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -118,6 +125,7 @@ pub fn run() {
             hide_palette,
             resize_palette,
             get_skills_dir,
+            get_project_dir,
         ])
         .setup(|app| {
             // Register global shortcut with handler: Option+Space (macOS) / Alt+Space (Windows/Linux)

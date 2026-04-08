@@ -11,12 +11,11 @@ export function Settings({ onClose }: Props) {
   const [hasExisting, setHasExisting] = useState(false);
 
   useEffect(() => {
-    getApiKey().then((k) => {
-      if (k) {
-        setHasExisting(true);
-        setKey("sk-ant-••••••••••••" + k.slice(-4));
-      }
-    });
+    const k = getApiKey();
+    if (k) {
+      setHasExisting(true);
+      setKey("sk-ant-••••••••••••" + k.slice(-4));
+    }
   }, []);
 
   const handleSave = () => {
