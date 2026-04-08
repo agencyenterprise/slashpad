@@ -3,14 +3,13 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import Fuse from "fuse.js";
 import type { Skill, ToolEvent, ChatMessage, SessionInfo, PaletteMode } from "../lib/types";
-import { loadSkills, saveSkill, buildSkillFromSession } from "../lib/skills";
+import { loadSkills } from "../lib/skills";
 import {
   startChatSession,
   listRecentSessions,
   loadSessionMessages,
   ChatSession,
   SYSTEM_PROMPT,
-  SKILL_CREATION_PROMPT,
 } from "../lib/agent";
 
 const INPUT_HEIGHT = 90;
@@ -39,15 +38,12 @@ export function usePalette() {
   const [recentSessions, setRecentSessions] = useState<SessionInfo[]>([]);
   const [selectedSessionIndex, setSelectedSessionIndex] = useState(0);
 
-  // Other
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [toolsUsed, setToolsUsed] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Fuse.js for fuzzy matching skills
   const fuse = useRef<Fuse<Skill>>(
     new Fuse([], {
-      keys: ["trigger", "name", "description"],
+      keys: ["name", "description"],
       threshold: 0.4,
     })
   );
@@ -57,7 +53,7 @@ export function usePalette() {
     loadSkills().then((loaded) => {
       setSkills(loaded);
       fuse.current = new Fuse(loaded, {
-        keys: ["trigger", "name", "description"],
+        keys: ["name", "description"],
         threshold: 0.4,
       });
     });
@@ -96,7 +92,6 @@ export function usePalette() {
       setIsAgentReady(false);
       setSessionId(null);
       setFilteredSkills(skills);
-      setShowSaveDialog(false);
       setSelectedIndex(0);
       setSelectedSessionIndex(0);
       currentAssistantIdRef.current = null;
@@ -148,8 +143,6 @@ export function usePalette() {
 
   // Shared event handler for chat sessions
   const makeOnEvent = useCallback(() => {
-    const usedTools: string[] = [];
-
     return (event: ToolEvent) => {
       if (event.type === "session_id" && event.sessionId) {
         setSessionId(event.sessionId);
@@ -193,7 +186,6 @@ export function usePalette() {
       }
 
       if ((event.type === "tool_start" || event.type === "tool_end") && event.tool) {
-        if (event.type === "tool_start") usedTools.push(event.tool);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === currentAssistantIdRef.current
@@ -221,7 +213,6 @@ export function usePalette() {
               : m
           )
         );
-        setToolsUsed(usedTools);
         // Reset for next turn
         currentAssistantIdRef.current = null;
       }
@@ -250,23 +241,12 @@ export function usePalette() {
       setMessages([userMsg]);
       setInput("");
 
-      const isSkillCreation =
-        prompt.toLowerCase().includes("create a skill") ||
-        prompt.toLowerCase().includes("make a skill") ||
-        prompt.toLowerCase().includes("new skill");
-
-      const systemPrompt =
-        isSkillCreation && !skill
-          ? SYSTEM_PROMPT + "\n\n" + SKILL_CREATION_PROMPT
-          : SYSTEM_PROMPT;
-
       const onEvent = makeOnEvent();
 
       try {
         const session = await startChatSession(
           prompt,
-          systemPrompt,
-          skill?.tools ?? [],
+          SYSTEM_PROMPT,
           onEvent
         );
         chatSessionRef.current = session;
@@ -333,7 +313,6 @@ export function usePalette() {
           const session = await startChatSession(
             content.trim(),
             SYSTEM_PROMPT,
-            [],
             onEvent,
             sessionId
           );
@@ -353,7 +332,7 @@ export function usePalette() {
     } else if (mode === "skills" && filteredSkills.length > 0) {
       const skill = filteredSkills[selectedIndex];
       if (skill) {
-        startChat(skill.prompt, skill);
+        startChat(`/${skill.name}`, skill);
       }
     } else if (mode === "idle" && !input && recentSessions.length > 0) {
       // Select a session from the list
@@ -416,23 +395,6 @@ export function usePalette() {
     }
   }, [messages]);
 
-  const handleSaveAsSkill = useCallback(
-    async (trigger: string) => {
-      const firstUserMsg = messages.find((m) => m.role === "user");
-      const prompt = firstUserMsg?.content || input;
-      const skill = buildSkillFromSession(trigger, prompt, toolsUsed);
-      await saveSkill(skill);
-      const updated = await loadSkills();
-      setSkills(updated);
-      fuse.current = new Fuse(updated, {
-        keys: ["trigger", "name", "description"],
-        threshold: 0.4,
-      });
-      setShowSaveDialog(false);
-    },
-    [input, toolsUsed, messages]
-  );
-
   return {
     input,
     setInput,
@@ -445,11 +407,8 @@ export function usePalette() {
     isAgentReady,
     recentSessions,
     selectedSessionIndex,
-    showSaveDialog,
-    setShowSaveDialog,
     handleKeyDown,
     handleSubmit,
-    handleSaveAsSkill,
     copyResult,
     dismiss,
     resumeSession,

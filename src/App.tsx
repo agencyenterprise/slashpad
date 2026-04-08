@@ -4,7 +4,6 @@ import { CommandInput } from "./components/CommandInput";
 import { SkillList } from "./components/SkillList";
 import { ChatPanel } from "./components/ChatPanel";
 import { SessionList } from "./components/SessionList";
-import { SaveSkillDialog } from "./components/SaveSkillDialog";
 import { Settings } from "./components/Settings";
 
 export default function App() {
@@ -19,10 +18,7 @@ export default function App() {
     isAgentReady,
     recentSessions,
     selectedSessionIndex,
-    showSaveDialog,
-    setShowSaveDialog,
     handleKeyDown,
-    handleSaveAsSkill,
     copyResult,
     resumeSession,
   } = usePalette();
@@ -76,16 +72,8 @@ export default function App() {
       )}
 
       {/* Chat panel */}
-      {!showSettings && mode === "chatting" && !showSaveDialog && (
+      {!showSettings && mode === "chatting" && (
         <ChatPanel messages={messages} isAgentReady={isAgentReady} />
-      )}
-
-      {/* Save as skill dialog */}
-      {showSaveDialog && (
-        <SaveSkillDialog
-          onSave={handleSaveAsSkill}
-          onCancel={() => setShowSaveDialog(false)}
-        />
       )}
     </div>
   );

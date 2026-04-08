@@ -1,24 +1,8 @@
-use serde::{Deserialize, Serialize};
 use tauri::{
     AppHandle, Emitter, Listener, Manager, LogicalSize, PhysicalPosition,
     WebviewWindow,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SessionRequest {
-    pub prompt: String,
-    pub skill: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SkillDef {
-    pub name: String,
-    pub trigger: String,
-    pub description: String,
-    pub prompt: String,
-    pub tools: Vec<String>,
-}
 
 /// Reposition the palette window centered on whichever monitor the cursor is on.
 /// Window height is dynamic — we only center horizontally and position ~25% from top.
@@ -101,9 +85,9 @@ async fn resize_palette(app: AppHandle, height: f64) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn get_skills_dir() -> Result<String, String> {
+async fn get_launchpad_dir() -> Result<String, String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let dir = format!("{}/.launchpad/skills", home);
+    let dir = format!("{}/.launchpad", home);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
@@ -124,7 +108,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             hide_palette,
             resize_palette,
-            get_skills_dir,
+            get_launchpad_dir,
             get_project_dir,
         ])
         .setup(|app| {
@@ -169,9 +153,9 @@ pub fn run() {
                 }
             }
 
-            // Create skills directory
+            // Create launchpad project directory with .claude/skills
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            let skills_dir = format!("{}/.launchpad/skills", home);
+            let skills_dir = format!("{}/.launchpad/.claude/skills", home);
             let _ = std::fs::create_dir_all(&skills_dir);
 
             Ok(())

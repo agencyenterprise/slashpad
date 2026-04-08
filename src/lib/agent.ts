@@ -28,7 +28,7 @@ export function setApiKey(key: string) {
   localStorage.setItem("launchpad_api_key", key);
 }
 
-async function getRunnerPath(): Promise<{ runnerPath: string; projectDir: string }> {
+async function getRunnerPath(): Promise<string> {
   let projectDir: string;
   try {
     projectDir = await invoke<string>("get_project_dir");
@@ -38,7 +38,11 @@ async function getRunnerPath(): Promise<{ runnerPath: string; projectDir: string
   } catch {
     projectDir = ".";
   }
-  return { runnerPath: `${projectDir}/agent/runner.mjs`, projectDir };
+  return `${projectDir}/agent/runner.mjs`;
+}
+
+async function getLaunchpadDir(): Promise<string> {
+  return await invoke<string>("get_launchpad_dir");
 }
 
 /**
@@ -136,18 +140,20 @@ export class ChatSession {
 export async function startChatSession(
   prompt: string,
   systemPrompt: string,
-  _tools: string[],
   onEvent: EventCallback,
   resumeId?: string
 ): Promise<ChatSession> {
-  const { runnerPath, projectDir } = await getRunnerPath();
+  const [runnerPath, launchpadDir] = await Promise.all([
+    getRunnerPath(),
+    getLaunchpadDir(),
+  ]);
 
   const payload: Record<string, unknown> = {
     mode: "chat",
     prompt,
     systemPrompt,
     apiKey: getApiKey() || undefined,
-    cwd: projectDir,
+    cwd: launchpadDir,
   };
   if (resumeId) {
     payload.resume = resumeId;
@@ -162,11 +168,14 @@ export async function startChatSession(
  * List recent sessions from the SDK's session store.
  */
 export async function listRecentSessions(): Promise<SessionInfo[]> {
-  const { runnerPath, projectDir } = await getRunnerPath();
+  const [runnerPath, launchpadDir] = await Promise.all([
+    getRunnerPath(),
+    getLaunchpadDir(),
+  ]);
 
   const payload = {
     mode: "list",
-    cwd: projectDir,
+    cwd: launchpadDir,
   };
 
   const base64Payload = btoa(JSON.stringify(payload));
@@ -215,12 +224,15 @@ export async function listRecentSessions(): Promise<SessionInfo[]> {
  * Load messages from a past session for display.
  */
 export async function loadSessionMessages(sessionId: string): Promise<ChatMessage[]> {
-  const { runnerPath, projectDir } = await getRunnerPath();
+  const [runnerPath, launchpadDir] = await Promise.all([
+    getRunnerPath(),
+    getLaunchpadDir(),
+  ]);
 
   const payload = {
     mode: "messages",
     sessionId,
-    cwd: projectDir,
+    cwd: launchpadDir,
   };
 
   const base64Payload = btoa(JSON.stringify(payload));
@@ -278,19 +290,4 @@ Guidelines:
 - Be extremely concise. This is a command palette, not a chat.
 - When using tools, do so without asking for confirmation unless destructive.
 - Format output as clean markdown.
-- If creating a skill definition, output valid YAML.
-- Prioritize speed and directness over politeness.
-- When the user asks to "create a skill", generate a YAML skill definition with: name, trigger, description, prompt, and tools fields.`;
-
-/**
- * System prompt addition when creating skills.
- */
-export const SKILL_CREATION_PROMPT = `The user wants to create a new Launchpad skill.
-Generate a complete skill definition in YAML format with these fields:
-- name: Human-readable name
-- trigger: Short /command trigger (lowercase, hyphens)
-- description: One-line description
-- prompt: The full prompt that will be sent to Claude when this skill runs
-- tools: Array of tool identifiers needed (e.g., composio:gmail, composio:github)
-
-Output ONLY the YAML, no explanation.`;
+- Prioritize speed and directness over politeness.`;

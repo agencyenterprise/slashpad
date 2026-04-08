@@ -1,11 +1,8 @@
 export interface Skill {
   name: string;
-  trigger: string;
   description: string;
-  prompt: string;
-  tools: string[];
-  createdAt?: string;
-  lastUsed?: string;
+  path: string;
+  args?: { name: string; description: string; required: boolean }[];
 }
 
 export interface ToolEvent {

@@ -23,7 +23,7 @@ export function SkillList({ skills, selectedIndex }: Props) {
     >
       {skills.map((skill, i) => (
         <div
-          key={skill.trigger}
+          key={skill.name}
           role="option"
           aria-selected={i === selectedIndex}
           className={`flex items-center gap-3 px-5 py-3 cursor-default transition-colors duration-75
@@ -34,31 +34,14 @@ export function SkillList({ skills, selectedIndex }: Props) {
         >
           {/* Trigger badge */}
           <span className="flex-shrink-0 font-mono text-[13px] text-accent font-medium min-w-[80px]">
-            {skill.trigger}
+            /{skill.name}
           </span>
 
-          {/* Name + description */}
+          {/* Description */}
           <div className="flex-1 min-w-0">
-            <div className="flex items-baseline gap-2">
-              <span className="text-white text-[13px] font-medium truncate">
-                {skill.name}
-              </span>
-              <span className="text-muted text-[12px] truncate">
-                {skill.description}
-              </span>
-            </div>
-          </div>
-
-          {/* Tool icons */}
-          <div className="flex-shrink-0 flex gap-1">
-            {skill.tools.slice(0, 3).map((tool) => (
-              <span
-                key={tool}
-                className="text-[10px] text-muted font-mono bg-surface-0 px-1.5 py-0.5 rounded"
-              >
-                {tool.replace("composio:", "")}
-              </span>
-            ))}
+            <span className="text-muted text-[12px] truncate">
+              {skill.description}
+            </span>
           </div>
 
           {/* Run hint on selected */}

@@ -95,7 +95,8 @@ async function runTurn(userPrompt) {
   const options = {
     cwd: cwd || process.env.HOME,
     systemPrompt: systemPrompt || undefined,
-    allowedTools: ["Read", "Write", "Bash", "Glob", "Grep"],
+    allowedTools: ["Read", "Write", "Bash", "Glob", "Grep", "Skill"],
+    settingSources: ["project"],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     maxTurns: 10,
