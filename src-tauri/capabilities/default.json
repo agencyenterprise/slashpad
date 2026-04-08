@@ -32,31 +32,37 @@
     {
       "identifier": "fs:allow-read-text-file",
       "allow": [
-        { "path": "$HOME/.launchpad/**" }
+        { "path": "$HOME/.launchpad/**" },
+        { "path": "$HOME/.launchpad/.claude/**" }
       ]
     },
     {
       "identifier": "fs:allow-write-text-file",
       "allow": [
-        { "path": "$HOME/.launchpad/**" }
+        { "path": "$HOME/.launchpad/**" },
+        { "path": "$HOME/.launchpad/.claude/**" }
       ]
     },
     {
       "identifier": "fs:allow-read-dir",
       "allow": [
-        { "path": "$HOME/.launchpad/**" }
+        { "path": "$HOME/.launchpad/**" },
+        { "path": "$HOME/.launchpad/.claude/skills" },
+        { "path": "$HOME/.launchpad/.claude/skills/**" }
       ]
     },
     {
       "identifier": "fs:allow-remove",
       "allow": [
-        { "path": "$HOME/.launchpad/**" }
+        { "path": "$HOME/.launchpad/**" },
+        { "path": "$HOME/.launchpad/.claude/**" }
       ]
     },
     {
       "identifier": "fs:allow-mkdir",
       "allow": [
-        { "path": "$HOME/.launchpad/**" }
+        { "path": "$HOME/.launchpad/**" },
+        { "path": "$HOME/.launchpad/.claude/**" }
       ]
     },
     "shell:allow-stdin-write",

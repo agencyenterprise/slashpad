@@ -3,6 +3,35 @@ use tauri::{
     WebviewWindow,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use include_dir::{include_dir, Dir};
+
+static SKILL_CREATOR_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/bundled-skills/skill-creator");
+
+/// Seed a bundled skill into the user's skills directory if it doesn't already exist.
+fn seed_bundled_skill(skills_dir: &str, skill_name: &str, dir: &Dir<'static>) {
+    let dest = format!("{}/{}", skills_dir, skill_name);
+    if std::path::Path::new(&dest).exists() {
+        return;
+    }
+    if let Err(e) = extract_dir(dir, &std::path::Path::new(&dest)) {
+        eprintln!("Failed to seed skill '{}': {}", skill_name, e);
+    }
+}
+
+fn extract_dir(dir: &Dir<'static>, dest: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for file in dir.files() {
+        if let Some(name) = file.path().file_name() {
+            std::fs::write(dest.join(name), file.contents())?;
+        }
+    }
+    for sub_dir in dir.dirs() {
+        if let Some(name) = sub_dir.path().file_name() {
+            extract_dir(sub_dir, &dest.join(name))?;
+        }
+    }
+    Ok(())
+}
 
 /// Reposition the palette window centered on whichever monitor the cursor is on.
 /// Window height is dynamic — we only center horizontally and position ~25% from top.
@@ -157,6 +186,9 @@ pub fn run() {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             let skills_dir = format!("{}/.launchpad/.claude/skills", home);
             let _ = std::fs::create_dir_all(&skills_dir);
+
+            // Seed bundled skills on first run
+            seed_bundled_skill(&skills_dir, "skill-creator", &SKILL_CREATOR_DIR);
 
             Ok(())
         })

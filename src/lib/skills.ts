@@ -39,13 +39,14 @@ export async function loadSkills(): Promise<Skill[]> {
           path: skillPath,
           args: Array.isArray(fm.args) ? fm.args : undefined,
         });
-      } catch {
-        // Skip unreadable skill directories
+      } catch (e) {
+        console.error(`[skills] Failed to load skill "${entry.name}":`, e);
       }
     }
 
     return skills;
-  } catch {
+  } catch (e) {
+    console.error("[skills] Failed to load skills directory:", e);
     return [];
   }
 }
