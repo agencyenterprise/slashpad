@@ -103,6 +103,13 @@ export function usePalette() {
     };
   }, [killSession, refreshSessions, skills]);
 
+  // Refocus input when agent becomes ready (disabled input drops focus)
+  useEffect(() => {
+    if (isAgentReady && mode === "chatting") {
+      inputRef.current?.focus();
+    }
+  }, [isAgentReady, mode]);
+
   // Resize window based on content
   useEffect(() => {
     let height = INPUT_HEIGHT;
