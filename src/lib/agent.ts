@@ -1,30 +1,25 @@
 /**
- * Agent runner that executes Claude sessions via the Agent SDK sidecar.
+ * Agent runner that manages Claude chat sessions via the Agent SDK sidecar.
  *
  * Architecture:
  * - Spawns a Node.js sidecar process running the Claude Agent SDK
- * - The sidecar handles the Anthropic API, streaming, and tool execution
- * - Auth uses the existing Claude CLI login (no API key needed)
- * - Events are streamed back as JSONL on stdout
+ * - Chat sessions are long-lived: the sidecar stays alive for follow-up messages via stdin
+ * - Session persistence is handled by the SDK (stored in ~/.claude/projects/<cwd>/)
+ * - List and messages modes spawn one-shot processes for data retrieval
  */
 
-import { Command } from "@tauri-apps/plugin-shell";
+import { Command, Child } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
-import type { ToolEvent } from "./types";
+import type { ToolEvent, ChatMessage, SessionInfo } from "./types";
 
 type EventCallback = (event: ToolEvent) => void;
 
 /**
  * Get an optional API key override from localStorage.
- * The Agent SDK uses Claude CLI auth by default — this is only
- * needed if the user explicitly sets a key in Settings.
- * Returns null if no valid key is stored.
  */
 export function getApiKey(): string | null {
   const key = localStorage.getItem("launchpad_api_key");
-  // Only return keys that look like actual Anthropic API keys
   if (key && key.startsWith("sk-ant-")) return key;
-  // Clear garbage values
   if (key) localStorage.removeItem("launchpad_api_key");
   return null;
 }
@@ -33,49 +28,153 @@ export function setApiKey(key: string) {
   localStorage.setItem("launchpad_api_key", key);
 }
 
-/**
- * Run a streaming agent session via the Agent SDK sidecar.
- *
- * Spawns a Node.js process that runs agent/runner.mjs with the Agent SDK.
- * The SDK handles the full agentic loop (API calls, tool execution, streaming).
- * Events are emitted as JSONL on stdout and mapped to ToolEvent callbacks.
- */
-export async function runSession(
-  prompt: string,
-  systemPrompt: string,
-  _tools: string[],
-  onEvent: EventCallback
-): Promise<string> {
-  let fullResult = "";
-
-  const payload = {
-    prompt,
-    systemPrompt,
-    apiKey: getApiKey() || undefined,
-  };
-
-  const base64Payload = btoa(JSON.stringify(payload));
-
-  // Resolve absolute path to the runner script — the Tauri binary's CWD
-  // may not be the project root (e.g. src-tauri/target/debug/ during dev)
+async function getRunnerPath(): Promise<{ runnerPath: string; projectDir: string }> {
   let projectDir: string;
   try {
     projectDir = await invoke<string>("get_project_dir");
-    // During tauri dev, CWD is src-tauri/ — go up to project root
     if (projectDir.endsWith("/src-tauri") || projectDir.endsWith("\\src-tauri")) {
       projectDir = projectDir.replace(/[/\\]src-tauri$/, "");
     }
   } catch {
     projectDir = ".";
   }
-  const runnerPath = `${projectDir}/agent/runner.mjs`;
+  return { runnerPath: `${projectDir}/agent/runner.mjs`, projectDir };
+}
 
-  try {
-    const cmd = Command.create("node-agent", [runnerPath, base64Payload]);
+/**
+ * A live chat session backed by a long-lived sidecar process.
+ * Send follow-up messages via sendMessage(), kill when done.
+ */
+export class ChatSession {
+  private child: Child | null = null;
+  private cmd: Command<string> | null = null;
+  private _onEvent: EventCallback;
+  private _killed = false;
 
-    // Collect complete lines from stdout (JSONL protocol)
+  constructor(onEvent: EventCallback) {
+    this._onEvent = onEvent;
+  }
+
+  /** @internal — called by startChatSession */
+  async _start(payload: Record<string, unknown>, runnerPath: string): Promise<void> {
+    const base64Payload = btoa(JSON.stringify(payload));
+    this.cmd = Command.create("node-agent", [runnerPath, base64Payload]);
+
     let buffer = "";
     let stderrOutput = "";
+
+    this.cmd.stdout.on("data", (chunk: string) => {
+      buffer += chunk;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line) as ToolEvent;
+          this._onEvent(event);
+        } catch {
+          // Skip unparseable lines
+        }
+      }
+    });
+
+    this.cmd.stderr.on("data", (chunk: string) => {
+      stderrOutput += chunk;
+    });
+
+    this.cmd.on("close", (data: { code: number }) => {
+      if (!this._killed && data.code !== 0 && data.code !== null) {
+        const errMsg = stderrOutput.trim() || `Agent process exited with code ${data.code}`;
+        this._onEvent({ type: "error", error: errMsg, timestamp: Date.now() });
+      }
+      this.child = null;
+    });
+
+    this.cmd.on("error", (err: string) => {
+      if (!this._killed) {
+        this._onEvent({ type: "error", error: err, timestamp: Date.now() });
+      }
+    });
+
+    this.child = await this.cmd.spawn();
+  }
+
+  /**
+   * Send a follow-up message to the running session.
+   */
+  async sendMessage(content: string): Promise<void> {
+    if (!this.child) throw new Error("Session not running");
+    const msg = JSON.stringify({ type: "message", content }) + "\n";
+    await this.child.write(msg);
+  }
+
+  /**
+   * Kill the session process.
+   */
+  async kill(): Promise<void> {
+    this._killed = true;
+    if (this.child) {
+      try {
+        await this.child.write(JSON.stringify({ type: "close" }) + "\n");
+      } catch {
+        // Process may already be dead
+      }
+      try {
+        await this.child.kill();
+      } catch {
+        // Already exited
+      }
+      this.child = null;
+    }
+  }
+}
+
+/**
+ * Start a new chat session or resume an existing one.
+ */
+export async function startChatSession(
+  prompt: string,
+  systemPrompt: string,
+  _tools: string[],
+  onEvent: EventCallback,
+  resumeId?: string
+): Promise<ChatSession> {
+  const { runnerPath, projectDir } = await getRunnerPath();
+
+  const payload: Record<string, unknown> = {
+    mode: "chat",
+    prompt,
+    systemPrompt,
+    apiKey: getApiKey() || undefined,
+    cwd: projectDir,
+  };
+  if (resumeId) {
+    payload.resume = resumeId;
+  }
+
+  const session = new ChatSession(onEvent);
+  await session._start(payload, runnerPath);
+  return session;
+}
+
+/**
+ * List recent sessions from the SDK's session store.
+ */
+export async function listRecentSessions(): Promise<SessionInfo[]> {
+  const { runnerPath, projectDir } = await getRunnerPath();
+
+  const payload = {
+    mode: "list",
+    cwd: projectDir,
+  };
+
+  const base64Payload = btoa(JSON.stringify(payload));
+  const cmd = Command.create("node-agent", [runnerPath, base64Payload]);
+
+  return new Promise((resolve, reject) => {
+    const sessions: SessionInfo[] = [];
+    let buffer = "";
 
     cmd.stdout.on("data", (chunk: string) => {
       buffer += chunk;
@@ -85,62 +184,88 @@ export async function runSession(
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const event = JSON.parse(line) as ToolEvent;
-          if (event.type === "text_delta" && event.delta) {
-            fullResult += event.delta;
+          const event = JSON.parse(line);
+          if (event.type === "session") {
+            sessions.push({
+              sessionId: event.sessionId,
+              summary: event.summary,
+              lastModified: event.lastModified,
+              firstPrompt: event.firstPrompt,
+            });
           }
-          onEvent(event);
         } catch {
-          // Skip unparseable lines
+          // Skip unparseable
         }
       }
     });
 
-    cmd.stderr.on("data", (chunk: string) => {
-      stderrOutput += chunk;
+    cmd.on("close", () => {
+      resolve(sessions);
     });
 
-    const child = await cmd.spawn();
+    cmd.on("error", (err: string) => {
+      reject(new Error(err));
+    });
 
-    // Wait for the process to exit
-    await new Promise<void>((resolve, reject) => {
-      cmd.on("close", (data: { code: number }) => {
-        // Process any remaining buffer
-        if (buffer.trim()) {
-          try {
-            const event = JSON.parse(buffer) as ToolEvent;
-            if (event.type === "text_delta" && event.delta) {
-              fullResult += event.delta;
-            }
-            onEvent(event);
-          } catch {
-            // ignore
+    cmd.spawn();
+  });
+}
+
+/**
+ * Load messages from a past session for display.
+ */
+export async function loadSessionMessages(sessionId: string): Promise<ChatMessage[]> {
+  const { runnerPath, projectDir } = await getRunnerPath();
+
+  const payload = {
+    mode: "messages",
+    sessionId,
+    cwd: projectDir,
+  };
+
+  const base64Payload = btoa(JSON.stringify(payload));
+  const cmd = Command.create("node-agent", [runnerPath, base64Payload]);
+
+  return new Promise((resolve, reject) => {
+    const messages: ChatMessage[] = [];
+    let buffer = "";
+    let idCounter = 0;
+
+    cmd.stdout.on("data", (chunk: string) => {
+      buffer += chunk;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line);
+          if (event.type === "chat_message") {
+            messages.push({
+              id: `loaded-${idCounter++}`,
+              role: event.role,
+              content: event.content || "",
+              toolEvents: event.toolEvents || [],
+              timestamp: event.timestamp,
+              status: "complete",
+            });
           }
+        } catch {
+          // Skip unparseable
         }
-
-        if (data.code !== 0 && data.code !== null) {
-          // Show full stderr for debugging
-          const errMsg = stderrOutput.trim() || `Agent process exited with code ${data.code}`;
-          reject(new Error(errMsg));
-        } else {
-          resolve();
-        }
-      });
-
-      cmd.on("error", (err: string) => {
-        reject(new Error(err));
-      });
+      }
     });
-  } catch (e: any) {
-    onEvent({
-      type: "error",
-      error: e?.message || String(e),
-      timestamp: Date.now(),
-    });
-    onEvent({ type: "complete", timestamp: Date.now() });
-  }
 
-  return fullResult;
+    cmd.on("close", () => {
+      resolve(messages);
+    });
+
+    cmd.on("error", (err: string) => {
+      reject(new Error(err));
+    });
+
+    cmd.spawn();
+  });
 }
 
 /**

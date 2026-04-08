@@ -2,7 +2,8 @@ import React, { useState } from "react";
 import { usePalette } from "./hooks/usePalette";
 import { CommandInput } from "./components/CommandInput";
 import { SkillList } from "./components/SkillList";
-import { ResultsPanel } from "./components/ResultsPanel";
+import { ChatPanel } from "./components/ChatPanel";
+import { SessionList } from "./components/SessionList";
 import { SaveSkillDialog } from "./components/SaveSkillDialog";
 import { Settings } from "./components/Settings";
 
@@ -14,14 +15,16 @@ export default function App() {
     filteredSkills,
     selectedIndex,
     mode,
-    events,
-    result,
-    status,
+    messages,
+    isAgentReady,
+    recentSessions,
+    selectedSessionIndex,
     showSaveDialog,
     setShowSaveDialog,
     handleKeyDown,
     handleSaveAsSkill,
     copyResult,
+    resumeSession,
   } = usePalette();
 
   const [showSettings, setShowSettings] = useState(false);
@@ -50,7 +53,8 @@ export default function App() {
           }
           handleKeyDown(e);
         }}
-        status={status}
+        mode={mode}
+        isAgentReady={isAgentReady}
         inputRef={inputRef}
       />
 
@@ -62,15 +66,18 @@ export default function App() {
         <SkillList skills={filteredSkills} selectedIndex={selectedIndex} />
       )}
 
-      {/* Running / Result panel */}
-      {!showSettings && (mode === "running" || mode === "result") && !showSaveDialog && (
-        <ResultsPanel
-          events={events}
-          result={result}
-          status={status}
-          onCopy={copyResult}
-          onSaveAsSkill={() => setShowSaveDialog(true)}
+      {/* Recent sessions on idle */}
+      {!showSettings && mode === "idle" && !input && recentSessions.length > 0 && (
+        <SessionList
+          sessions={recentSessions}
+          selectedIndex={selectedSessionIndex}
+          onSelect={resumeSession}
         />
+      )}
+
+      {/* Chat panel */}
+      {!showSettings && mode === "chatting" && !showSaveDialog && (
+        <ChatPanel messages={messages} isAgentReady={isAgentReady} />
       )}
 
       {/* Save as skill dialog */}

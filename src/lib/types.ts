@@ -8,24 +8,31 @@ export interface Skill {
   lastUsed?: string;
 }
 
-export type SessionStatus = "idle" | "running" | "complete" | "error";
-
 export interface ToolEvent {
-  type: "tool_start" | "tool_end" | "text_delta" | "error" | "complete";
+  type: "tool_start" | "tool_end" | "text_delta" | "error" | "complete" | "ready" | "session_id";
   tool?: string;
   args?: Record<string, unknown>;
   result?: string;
   delta?: string;
   error?: string;
+  sessionId?: string;
   timestamp: number;
 }
 
-export interface Session {
+export interface ChatMessage {
   id: string;
-  prompt: string;
-  skill?: Skill;
-  status: SessionStatus;
-  events: ToolEvent[];
-  result: string;
-  startedAt: number;
+  role: "user" | "assistant";
+  content: string;
+  toolEvents: ToolEvent[];
+  timestamp: number;
+  status: "streaming" | "complete" | "error";
 }
+
+export interface SessionInfo {
+  sessionId: string;
+  summary: string;
+  lastModified: number;
+  firstPrompt?: string;
+}
+
+export type PaletteMode = "idle" | "skills" | "chatting";

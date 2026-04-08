@@ -59,6 +59,8 @@
         { "path": "$HOME/.launchpad/**" }
       ]
     },
+    "shell:allow-stdin-write",
+    "shell:allow-kill",
     "store:allow-get",
     "store:allow-set"
   ]

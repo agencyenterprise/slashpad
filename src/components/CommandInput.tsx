@@ -1,15 +1,25 @@
 import React from "react";
-import type { SessionStatus } from "../lib/types";
+import type { PaletteMode } from "../lib/types";
 
 interface Props {
   value: string;
   onChange: (value: string) => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
-  status: SessionStatus;
+  mode: PaletteMode;
+  isAgentReady: boolean;
   inputRef: React.RefObject<HTMLInputElement>;
 }
 
-export function CommandInput({ value, onChange, onKeyDown, status, inputRef }: Props) {
+export function CommandInput({ value, onChange, onKeyDown, mode, isAgentReady, inputRef }: Props) {
+  const isChatting = mode === "chatting";
+  const isProcessing = isChatting && !isAgentReady;
+
+  const placeholder = isChatting
+    ? isAgentReady
+      ? "Send a follow-up..."
+      : "Waiting for response..."
+    : "Run a command or ask anything...";
+
   return (
     <div
       data-tauri-drag-region
@@ -17,27 +27,8 @@ export function CommandInput({ value, onChange, onKeyDown, status, inputRef }: P
     >
       {/* Status indicator */}
       <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
-        {status === "running" ? (
+        {isProcessing ? (
           <div className="w-2.5 h-2.5 rounded-full bg-accent animate-pulse-subtle" />
-        ) : status === "complete" ? (
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path
-              d="M2 7.5L5.5 11L12 3"
-              stroke="#4ade80"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        ) : status === "error" ? (
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path
-              d="M3 3L11 11M11 3L3 11"
-              stroke="#f87171"
-              strokeWidth="2"
-              strokeLinecap="round"
-            />
-          </svg>
         ) : (
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="opacity-40">
             <path
@@ -59,28 +50,33 @@ export function CommandInput({ value, onChange, onKeyDown, status, inputRef }: P
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
-        placeholder="Run a command or ask anything..."
+        placeholder={placeholder}
+        disabled={isProcessing}
         spellCheck={false}
         autoFocus
         className="flex-1 bg-transparent text-[15px] text-white font-mono
-          placeholder:text-muted outline-none caret-accent"
+          placeholder:text-muted outline-none caret-accent disabled:opacity-50"
       />
 
       {/* Hint */}
       <div className="flex-shrink-0 flex items-center gap-1.5">
-        {value.startsWith("/") ? (
+        {isChatting && isAgentReady && value.length > 0 ? (
+          <kbd className="text-[11px] text-muted font-mono bg-surface-3 px-1.5 py-0.5 rounded">
+            ↵ reply
+          </kbd>
+        ) : !isChatting && value.startsWith("/") ? (
           <kbd className="text-[11px] text-muted font-mono bg-surface-3 px-1.5 py-0.5 rounded">
             ↵ run
           </kbd>
-        ) : value.length > 0 ? (
+        ) : !isChatting && value.length > 0 ? (
           <kbd className="text-[11px] text-muted font-mono bg-surface-3 px-1.5 py-0.5 rounded">
             ↵ send
           </kbd>
-        ) : (
+        ) : !isChatting && !value ? (
           <kbd className="text-[11px] text-muted font-mono bg-surface-3 px-1.5 py-0.5 rounded">
             / skills
           </kbd>
-        )}
+        ) : null}
         <kbd className="text-[11px] text-muted font-mono bg-surface-3 px-1.5 py-0.5 rounded">
           esc
         </kbd>

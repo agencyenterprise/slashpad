@@ -2,26 +2,47 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import Fuse from "fuse.js";
-import type { Skill, ToolEvent, SessionStatus } from "../lib/types";
+import type { Skill, ToolEvent, ChatMessage, SessionInfo, PaletteMode } from "../lib/types";
 import { loadSkills, saveSkill, buildSkillFromSession } from "../lib/skills";
-import { runSession, SYSTEM_PROMPT, SKILL_CREATION_PROMPT } from "../lib/agent";
+import {
+  startChatSession,
+  listRecentSessions,
+  loadSessionMessages,
+  ChatSession,
+  SYSTEM_PROMPT,
+  SKILL_CREATION_PROMPT,
+} from "../lib/agent";
 
 const INPUT_HEIGHT = 90;
 const MAX_RESULTS_HEIGHT = 480;
+
+let msgIdCounter = 0;
+function nextMsgId() {
+  return `msg-${Date.now()}-${msgIdCounter++}`;
+}
 
 export function usePalette() {
   const [input, setInput] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [filteredSkills, setFilteredSkills] = useState<Skill[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [mode, setMode] = useState<"idle" | "skills" | "running" | "result">("idle");
-  const [events, setEvents] = useState<ToolEvent[]>([]);
-  const [result, setResult] = useState("");
-  const [status, setStatus] = useState<SessionStatus>("idle");
+  const [mode, setMode] = useState<PaletteMode>("idle");
+
+  // Chat state
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isAgentReady, setIsAgentReady] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const chatSessionRef = useRef<ChatSession | null>(null);
+  const currentAssistantIdRef = useRef<string | null>(null);
+
+  // Session list
+  const [recentSessions, setRecentSessions] = useState<SessionInfo[]>([]);
+  const [selectedSessionIndex, setSelectedSessionIndex] = useState(0);
+
+  // Other
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [toolsUsed, setToolsUsed] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
-  const resultRef = useRef("");
 
   // Fuse.js for fuzzy matching skills
   const fuse = useRef<Fuse<Skill>>(
@@ -42,24 +63,49 @@ export function usePalette() {
     });
   }, []);
 
+  // Load recent sessions
+  const refreshSessions = useCallback(async () => {
+    try {
+      const sessions = await listRecentSessions();
+      setRecentSessions(sessions);
+    } catch {
+      setRecentSessions([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshSessions();
+  }, [refreshSessions]);
+
+  // Kill active session helper
+  const killSession = useCallback(async () => {
+    if (chatSessionRef.current) {
+      await chatSessionRef.current.kill();
+      chatSessionRef.current = null;
+    }
+  }, []);
+
   // Listen for palette show/hide events from Rust
   useEffect(() => {
     const unlisten = listen("palette-shown", () => {
-      // Reset state when palette opens
+      // Kill any active session and reset
+      killSession();
       setInput("");
       setMode("idle");
-      setEvents([]);
-      setResult("");
-      setStatus("idle");
+      setMessages([]);
+      setIsAgentReady(false);
+      setSessionId(null);
       setShowSaveDialog(false);
       setSelectedIndex(0);
-      resultRef.current = "";
+      setSelectedSessionIndex(0);
+      currentAssistantIdRef.current = null;
+      refreshSessions();
       setTimeout(() => inputRef.current?.focus(), 50);
     });
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, []);
+  }, [killSession, refreshSessions]);
 
   // Resize window based on content
   useEffect(() => {
@@ -67,14 +113,18 @@ export function usePalette() {
     if (mode === "skills") {
       const count = filteredSkills.length || skills.length;
       height += Math.min(Math.max(count, 1) * 52, 260);
-    } else if (mode === "running" || mode === "result") {
+    } else if (mode === "chatting") {
       height += MAX_RESULTS_HEIGHT;
+    } else if (mode === "idle" && recentSessions.length > 0 && !input) {
+      height += Math.min(Math.max(recentSessions.length, 1) * 52, 260);
     }
     invoke("resize_palette", { height });
-  }, [mode, filteredSkills.length, skills.length, events.length]);
+  }, [mode, filteredSkills.length, skills.length, recentSessions.length, input, messages.length]);
 
-  // Filter skills as user types
+  // Filter skills as user types (only when not in chatting mode)
   useEffect(() => {
+    if (mode === "chatting") return;
+
     if (input.startsWith("/")) {
       const query = input.slice(1);
       if (query.length === 0) {
@@ -89,129 +139,264 @@ export function usePalette() {
       setMode("idle");
       setFilteredSkills([]);
     }
-  }, [input, skills]);
+  }, [input, skills, mode]);
 
   const dismiss = useCallback(() => {
     invoke("hide_palette");
   }, []);
 
-  const runSkill = useCallback(
-    async (skill: Skill) => {
-      setMode("running");
-      setStatus("running");
-      setEvents([]);
-      setResult("");
-      resultRef.current = "";
-      setToolsUsed([]);
+  // Shared event handler for chat sessions
+  const makeOnEvent = useCallback(() => {
+    const usedTools: string[] = [];
 
-      const usedTools: string[] = [];
+    return (event: ToolEvent) => {
+      if (event.type === "session_id" && event.sessionId) {
+        setSessionId(event.sessionId);
+        return;
+      }
 
-      const finalResult = await runSession(
-        skill.prompt,
-        SYSTEM_PROMPT,
-        skill.tools,
-        (event) => {
-          setEvents((prev) => [...prev, event]);
-          if (event.type === "text_delta" && event.delta) {
-            resultRef.current += event.delta;
-            setResult(resultRef.current);
-          }
-          if (event.type === "tool_start" && event.tool) {
-            usedTools.push(event.tool);
-          }
-          if (event.type === "complete") {
-            setStatus("complete");
-            setMode("result");
-          }
-          if (event.type === "error") {
-            setStatus("error");
-            setMode("result");
-          }
-        }
-      );
+      if (event.type === "ready") {
+        setIsAgentReady(true);
+        return;
+      }
 
-      setToolsUsed(usedTools);
-    },
-    []
-  );
+      if (event.type === "text_delta" || event.type === "tool_start" || event.type === "tool_end") {
+        // Ensure an assistant message exists for this turn
+        setMessages((prev) => {
+          const lastMsg = prev[prev.length - 1];
+          if (!lastMsg || lastMsg.role !== "assistant" || lastMsg.status !== "streaming") {
+            const newId = nextMsgId();
+            currentAssistantIdRef.current = newId;
+            const newMsg: ChatMessage = {
+              id: newId,
+              role: "assistant",
+              content: "",
+              toolEvents: [],
+              timestamp: Date.now(),
+              status: "streaming",
+            };
+            return [...prev, newMsg];
+          }
+          return prev;
+        });
+      }
 
-  const runAdHoc = useCallback(
-    async (prompt: string) => {
-      setMode("running");
-      setStatus("running");
-      setEvents([]);
-      setResult("");
-      resultRef.current = "";
-      setToolsUsed([]);
+      if (event.type === "text_delta" && event.delta) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === currentAssistantIdRef.current
+              ? { ...m, content: m.content + event.delta }
+              : m
+          )
+        );
+      }
+
+      if ((event.type === "tool_start" || event.type === "tool_end") && event.tool) {
+        if (event.type === "tool_start") usedTools.push(event.tool);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === currentAssistantIdRef.current
+              ? { ...m, toolEvents: [...m.toolEvents, event] }
+              : m
+          )
+        );
+      }
+
+      if (event.type === "error") {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === currentAssistantIdRef.current
+              ? { ...m, status: "error" as const, content: m.content || event.error || "An error occurred" }
+              : m
+          )
+        );
+      }
+
+      if (event.type === "complete") {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === currentAssistantIdRef.current
+              ? { ...m, status: "complete" as const }
+              : m
+          )
+        );
+        setToolsUsed(usedTools);
+        // Reset for next turn
+        currentAssistantIdRef.current = null;
+      }
+    };
+  }, []);
+
+  // Start a new chat session
+  const startChat = useCallback(
+    async (prompt: string, skill?: Skill) => {
+      await killSession();
+
+      setMode("chatting");
+      setIsAgentReady(false);
+      setSessionId(null);
+      currentAssistantIdRef.current = null;
+
+      // Add user message
+      const userMsg: ChatMessage = {
+        id: nextMsgId(),
+        role: "user",
+        content: prompt,
+        toolEvents: [],
+        timestamp: Date.now(),
+        status: "complete",
+      };
+      setMessages([userMsg]);
+      setInput("");
 
       const isSkillCreation =
         prompt.toLowerCase().includes("create a skill") ||
         prompt.toLowerCase().includes("make a skill") ||
         prompt.toLowerCase().includes("new skill");
 
-      const systemPrompt = isSkillCreation
-        ? SYSTEM_PROMPT + "\n\n" + SKILL_CREATION_PROMPT
-        : SYSTEM_PROMPT;
+      const systemPrompt =
+        isSkillCreation && !skill
+          ? SYSTEM_PROMPT + "\n\n" + SKILL_CREATION_PROMPT
+          : SYSTEM_PROMPT;
 
-      const usedTools: string[] = [];
+      const onEvent = makeOnEvent();
 
-      await runSession(prompt, systemPrompt, [], (event) => {
-        setEvents((prev) => [...prev, event]);
-        if (event.type === "text_delta" && event.delta) {
-          resultRef.current += event.delta;
-          setResult(resultRef.current);
-        }
-        if (event.type === "tool_start" && event.tool) {
-          usedTools.push(event.tool);
-        }
-        if (event.type === "complete") {
-          setStatus("complete");
-          setMode("result");
-        }
-        if (event.type === "error") {
-          setStatus("error");
-          setMode("result");
-        }
-      });
-
-      setToolsUsed(usedTools);
+      try {
+        const session = await startChatSession(
+          prompt,
+          systemPrompt,
+          skill?.tools ?? [],
+          onEvent
+        );
+        chatSessionRef.current = session;
+      } catch (e: any) {
+        onEvent({ type: "error", error: e?.message || String(e), timestamp: Date.now() });
+        onEvent({ type: "ready", timestamp: Date.now() });
+      }
     },
-    []
+    [killSession, makeOnEvent]
+  );
+
+  // Resume a past session
+  const resumeSession = useCallback(
+    async (info: SessionInfo) => {
+      await killSession();
+
+      setMode("chatting");
+      setIsAgentReady(true); // Ready for input — sidecar not spawned yet
+      setSessionId(info.sessionId);
+      setInput("");
+      currentAssistantIdRef.current = null;
+
+      try {
+        const loaded = await loadSessionMessages(info.sessionId);
+        setMessages(loaded);
+      } catch {
+        setMessages([]);
+      }
+    },
+    [killSession]
+  );
+
+  // Send a follow-up in active session
+  const sendFollowUp = useCallback(
+    async (content: string) => {
+      if (!content.trim()) return;
+
+      const userMsg: ChatMessage = {
+        id: nextMsgId(),
+        role: "user",
+        content: content.trim(),
+        toolEvents: [],
+        timestamp: Date.now(),
+        status: "complete",
+      };
+      setMessages((prev) => [...prev, userMsg]);
+      setInput("");
+      setIsAgentReady(false);
+      currentAssistantIdRef.current = null;
+
+      // If we have a live session, send via stdin
+      if (chatSessionRef.current) {
+        try {
+          await chatSessionRef.current.sendMessage(content.trim());
+        } catch (e: any) {
+          const onEvent = makeOnEvent();
+          onEvent({ type: "error", error: e?.message || String(e), timestamp: Date.now() });
+          onEvent({ type: "ready", timestamp: Date.now() });
+        }
+      } else if (sessionId) {
+        // Resumed session — need to spawn sidecar with resume
+        const onEvent = makeOnEvent();
+        try {
+          const session = await startChatSession(
+            content.trim(),
+            SYSTEM_PROMPT,
+            [],
+            onEvent,
+            sessionId
+          );
+          chatSessionRef.current = session;
+        } catch (e: any) {
+          onEvent({ type: "error", error: e?.message || String(e), timestamp: Date.now() });
+          onEvent({ type: "ready", timestamp: Date.now() });
+        }
+      }
+    },
+    [sessionId, makeOnEvent]
   );
 
   const handleSubmit = useCallback(() => {
-    if (mode === "skills" && filteredSkills.length > 0) {
+    if (mode === "chatting" && isAgentReady && input.trim()) {
+      sendFollowUp(input);
+    } else if (mode === "skills" && filteredSkills.length > 0) {
       const skill = filteredSkills[selectedIndex];
       if (skill) {
-        runSkill(skill);
+        startChat(skill.prompt, skill);
+      }
+    } else if (mode === "idle" && !input && recentSessions.length > 0) {
+      // Select a session from the list
+      const session = recentSessions[selectedSessionIndex];
+      if (session) {
+        resumeSession(session);
       }
     } else if (input.trim() && !input.startsWith("/")) {
-      runAdHoc(input.trim());
+      startChat(input.trim());
     }
-  }, [input, mode, filteredSkills, selectedIndex, runSkill, runAdHoc]);
+  }, [input, mode, isAgentReady, filteredSkills, selectedIndex, recentSessions, selectedSessionIndex, startChat, sendFollowUp, resumeSession]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       switch (e.key) {
         case "Escape":
-          if (mode === "running" || mode === "result") {
+          if (mode === "chatting") {
+            killSession();
             setMode("idle");
+            setMessages([]);
             setInput("");
-            setEvents([]);
-            setResult("");
+            setIsAgentReady(false);
+            setSessionId(null);
+            currentAssistantIdRef.current = null;
+            refreshSessions();
           } else {
             dismiss();
           }
           break;
         case "ArrowDown":
           e.preventDefault();
-          setSelectedIndex((i) =>
-            Math.min(i + 1, filteredSkills.length - 1)
-          );
+          if (mode === "skills") {
+            setSelectedIndex((i) => Math.min(i + 1, filteredSkills.length - 1));
+          } else if (mode === "idle" && !input && recentSessions.length > 0) {
+            setSelectedSessionIndex((i) => Math.min(i + 1, recentSessions.length - 1));
+          }
           break;
         case "ArrowUp":
           e.preventDefault();
-          setSelectedIndex((i) => Math.max(i - 1, 0));
+          if (mode === "skills") {
+            setSelectedIndex((i) => Math.max(i - 1, 0));
+          } else if (mode === "idle" && !input && recentSessions.length > 0) {
+            setSelectedSessionIndex((i) => Math.max(i - 1, 0));
+          }
           break;
         case "Enter":
           e.preventDefault();
@@ -219,16 +404,22 @@ export function usePalette() {
           break;
       }
     },
-    [mode, filteredSkills.length, handleSubmit, dismiss]
+    [mode, input, filteredSkills.length, recentSessions.length, handleSubmit, dismiss, killSession, refreshSessions]
   );
 
   const copyResult = useCallback(() => {
-    navigator.clipboard.writeText(result);
-  }, [result]);
+    // Copy the last assistant message
+    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+    if (lastAssistant) {
+      navigator.clipboard.writeText(lastAssistant.content);
+    }
+  }, [messages]);
 
   const handleSaveAsSkill = useCallback(
     async (trigger: string) => {
-      const skill = buildSkillFromSession(trigger, input, toolsUsed);
+      const firstUserMsg = messages.find((m) => m.role === "user");
+      const prompt = firstUserMsg?.content || input;
+      const skill = buildSkillFromSession(trigger, prompt, toolsUsed);
       await saveSkill(skill);
       const updated = await loadSkills();
       setSkills(updated);
@@ -238,7 +429,7 @@ export function usePalette() {
       });
       setShowSaveDialog(false);
     },
-    [input, toolsUsed]
+    [input, toolsUsed, messages]
   );
 
   return {
@@ -249,9 +440,10 @@ export function usePalette() {
     filteredSkills,
     selectedIndex,
     mode,
-    events,
-    result,
-    status,
+    messages,
+    isAgentReady,
+    recentSessions,
+    selectedSessionIndex,
     showSaveDialog,
     setShowSaveDialog,
     handleKeyDown,
@@ -259,5 +451,6 @@ export function usePalette() {
     handleSaveAsSkill,
     copyResult,
     dismiss,
+    resumeSession,
   };
 }
