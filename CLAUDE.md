@@ -18,16 +18,17 @@ There are no tests or linting configured.
 
 ## Architecture
 
-**Two runtimes:**
-- **Rust** (`src-tauri/src/lib.rs`): Window management, global hotkey (`Ctrl+Space`), multi-monitor cursor detection, palette toggle/resize, skills directory creation. All Tauri commands (`hide_palette`, `resize_palette`, `get_skills_dir`) are defined here.
-- **TypeScript/React** (`src/`): UI and agent logic run in the Tauri webview.
+**Three runtimes:**
+- **Rust** (`src-tauri/src/lib.rs`): Window management, global hotkey (`Ctrl+Space`), multi-monitor cursor detection, palette toggle/resize, skills directory creation, project dir resolution. Tauri commands: `hide_palette`, `resize_palette`, `get_skills_dir`, `get_project_dir`.
+- **TypeScript/React** (`src/`): UI and state management run in the Tauri webview.
+- **Node.js sidecar** (`agent/runner.mjs`): Runs the Claude Agent SDK in a spawned process. Communicates with the webview via JSONL on stdout.
 
-**Agent loop** (`src/lib/agent.ts`):
-- Calls Anthropic Messages API directly with streaming SSE (model: `claude-sonnet-4-20250514`)
-- Implements tool-use loop: prompt -> tool_use -> execute locally -> tool_result -> repeat (max 10 iterations)
-- Three built-in tools: `run_command` (shell via Tauri), `read_file`, `write_file`
-- Composio tools are declared but not yet wired (Phase 2)
-- API key resolution order: localStorage -> Claude CLI config -> `ANTHROPIC_API_KEY` env var
+**Agent architecture** (`src/lib/agent.ts` + `agent/runner.mjs`):
+- `agent.ts` spawns a Node.js sidecar via Tauri shell plugin (`Command.create("node-agent", [...])`)
+- The sidecar runs `@anthropic-ai/claude-agent-sdk` `query()` with built-in tools: Read, Write, Bash, Glob, Grep
+- Auth uses existing Claude CLI login (no API key needed). Optional API key override via localStorage.
+- Events stream as JSONL on stdout, mapped to `ToolEvent` types for the UI
+- `get_project_dir` Rust command resolves CWD; `agent.ts` strips `src-tauri/` suffix to find project root
 
 **State management** (`src/hooks/usePalette.ts`):
 - Single custom hook manages all palette state (input, mode, skills, events, results)
@@ -52,4 +53,4 @@ There are no tests or linting configured.
 - Animations: Framer Motion (fadeIn, slideDown, pulseSubtle keyframes)
 - Fonts: Berkeley Mono, JetBrains Mono, Inter
 - Components are flat (App.tsx -> CommandInput, SkillList, ResultsPanel, SaveSkillDialog, Settings), props-only, no context providers
-- Shell commands in `agent.ts` use Tauri's `Command.create("claude-cli", [...])` pattern
+- Agent sidecar is spawned via `Command.create("node-agent", [runnerPath, base64Payload])` — the `node-agent` scope maps to `node` in Tauri capabilities
