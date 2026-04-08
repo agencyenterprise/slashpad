@@ -88,13 +88,14 @@ export function usePalette() {
   // Listen for palette show/hide events from Rust
   useEffect(() => {
     const unlisten = listen("palette-shown", () => {
-      // Kill any active session and reset
+      // Kill any active session and reset — prefill "/" to show skills
       killSession();
-      setInput("");
-      setMode("idle");
+      setInput("/");
+      setMode("skills");
       setMessages([]);
       setIsAgentReady(false);
       setSessionId(null);
+      setFilteredSkills(skills);
       setShowSaveDialog(false);
       setSelectedIndex(0);
       setSelectedSessionIndex(0);
@@ -105,7 +106,7 @@ export function usePalette() {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [killSession, refreshSessions]);
+  }, [killSession, refreshSessions, skills]);
 
   // Resize window based on content
   useEffect(() => {
