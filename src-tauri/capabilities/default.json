@@ -1,0 +1,65 @@
+{
+  "identifier": "default",
+  "description": "Launchpad default capabilities",
+  "windows": ["palette"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-is-visible",
+    "core:window:allow-outer-size",
+    "core:window:allow-available-monitors",
+    "core:window:allow-cursor-position",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        { "name": "claude-cli", "cmd": "claude", "args": true },
+        { "name": "node-agent", "cmd": "node", "args": true }
+      ]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        { "name": "claude-cli", "cmd": "claude", "args": true },
+        { "name": "node-agent", "cmd": "node", "args": true }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        { "path": "$HOME/.launchpad/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        { "path": "$HOME/.launchpad/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [
+        { "path": "$HOME/.launchpad/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-remove",
+      "allow": [
+        { "path": "$HOME/.launchpad/**" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        { "path": "$HOME/.launchpad/**" }
+      ]
+    },
+    "store:allow-get",
+    "store:allow-set"
+  ]
+}
