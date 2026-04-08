@@ -64,13 +64,14 @@ export function usePalette() {
   // Resize window based on content
   useEffect(() => {
     let height = INPUT_HEIGHT;
-    if (mode === "skills" && filteredSkills.length > 0) {
-      height += Math.min(filteredSkills.length * 52, 260);
+    if (mode === "skills") {
+      const count = filteredSkills.length || skills.length;
+      height += Math.min(Math.max(count, 1) * 52, 260);
     } else if (mode === "running" || mode === "result") {
       height += MAX_RESULTS_HEIGHT;
     }
     invoke("resize_palette", { height });
-  }, [mode, filteredSkills.length, events.length]);
+  }, [mode, filteredSkills.length, skills.length, events.length]);
 
   // Filter skills as user types
   useEffect(() => {

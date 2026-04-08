@@ -84,7 +84,6 @@ export function ResultsPanel({ events, result, status, onCopy, onSaveAsSkill }: 
     <div
       className="mt-1 bg-surface-1 border border-surface-3 rounded-xl overflow-hidden animate-fade-in flex flex-col"
       style={{
-        boxShadow: "0 8px 40px rgba(0,0,0,0.5)",
         maxHeight: "480px",
       }}
     >

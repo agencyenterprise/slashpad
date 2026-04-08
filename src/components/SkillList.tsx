@@ -10,7 +10,7 @@ export function SkillList({ skills, selectedIndex }: Props) {
   if (skills.length === 0) {
     return (
       <div className="mt-1 px-5 py-4 bg-surface-1 border border-surface-3 rounded-xl animate-fade-in"
-        style={{ boxShadow: "0 8px 40px rgba(0,0,0,0.5)" }}>
+>
         <p className="text-muted text-[13px] font-mono">No matching skills</p>
       </div>
     );
@@ -19,7 +19,6 @@ export function SkillList({ skills, selectedIndex }: Props) {
   return (
     <div
       className="mt-1 bg-surface-1 border border-surface-3 rounded-xl overflow-hidden animate-fade-in"
-      style={{ boxShadow: "0 8px 40px rgba(0,0,0,0.5)" }}
       role="listbox"
     >
       {skills.map((skill, i) => (
