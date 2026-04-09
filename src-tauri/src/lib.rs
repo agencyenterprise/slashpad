@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 use tauri::{
     AppHandle, Emitter, Listener, Manager, LogicalSize, PhysicalPosition,
     WebviewWindow,
@@ -12,7 +14,6 @@ use tauri_nspanel::{
     tauri_panel,
     ManagerExt as PanelManagerExt,
     WebviewWindowExt as PanelWindowExt,
-    Panel,
     builder::CollectionBehavior,
 };
 
@@ -103,7 +104,9 @@ fn toggle_palette(app: &AppHandle) {
                 if let Some(window) = app.get_webview_window("palette") {
                     let _ = center_on_cursor_monitor(&window);
 
+                    #[allow(deprecated)]
                     let ns_win = window.ns_window().unwrap() as cocoa::base::id;
+                    #[allow(deprecated)]
                     unsafe {
                         use cocoa::appkit::NSWindow;
                         use cocoa::base::NO;
@@ -119,6 +122,7 @@ fn toggle_palette(app: &AppHandle) {
                 panel.order_front_regardless();
                 panel.make_key_window();
 
+                #[allow(deprecated)]
                 unsafe {
                     use cocoa::appkit::NSApplication;
                     use cocoa::base::YES;
@@ -263,6 +267,7 @@ pub fn run() {
             // macOS: convert window to NSPanel for full-screen overlay
             #[cfg(target_os = "macos")]
             {
+                #[allow(deprecated)]
                 unsafe {
                     use cocoa::appkit::{NSApplication, NSApplicationActivationPolicyAccessory};
                     cocoa::appkit::NSApp().setActivationPolicy_(NSApplicationActivationPolicyAccessory);
@@ -282,7 +287,9 @@ pub fn run() {
                         panel.set_collection_behavior(behavior.value());
                     }
 
+                    #[allow(deprecated)]
                     let ns_window = window.ns_window().unwrap() as cocoa::base::id;
+                    #[allow(deprecated)]
                     unsafe {
                         use cocoa::appkit::{NSColor, NSWindow};
                         use cocoa::base::nil;
