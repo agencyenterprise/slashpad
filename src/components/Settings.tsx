@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { setApiKey, getApiKey } from "../lib/agent";
+import { HotkeyRecorder } from "./HotkeyRecorder";
 
 interface Props {
   onClose: () => void;
@@ -9,6 +11,7 @@ export function Settings({ onClose }: Props) {
   const [key, setKey] = useState("");
   const [saved, setSaved] = useState(false);
   const [hasExisting, setHasExisting] = useState(false);
+  const [hotkey, setHotkey] = useState("Ctrl+Space");
 
   useEffect(() => {
     const k = getApiKey();
@@ -16,7 +19,13 @@ export function Settings({ onClose }: Props) {
       setHasExisting(true);
       setKey("sk-ant-••••••••••••" + k.slice(-4));
     }
+    invoke<string>("get_current_hotkey").then(setHotkey).catch(() => {});
   }, []);
+
+  const handleHotkeyChange = async (newShortcut: string) => {
+    await invoke("update_hotkey", { oldShortcut: hotkey, newShortcut });
+    setHotkey(newShortcut);
+  };
 
   const handleSave = () => {
     if (key && !key.startsWith("sk-ant-••")) {
@@ -73,23 +82,12 @@ export function Settings({ onClose }: Props) {
           </p>
         </div>
 
-        {/* Hotkey info */}
+        {/* Hotkey */}
         <div>
           <label className="text-[11px] text-muted font-mono uppercase tracking-wider block mb-1.5">
             Global Hotkey
           </label>
-          <div className="flex items-center gap-1.5">
-            <kbd className="text-[12px] text-white font-mono bg-surface-3 px-2 py-1 rounded">
-              ⌥
-            </kbd>
-            <span className="text-muted text-[11px]">+</span>
-            <kbd className="text-[12px] text-white font-mono bg-surface-3 px-2 py-1 rounded">
-              Space
-            </kbd>
-            <span className="text-[11px] text-muted/60 font-mono ml-2">
-              (configurable in future)
-            </span>
-          </div>
+          <HotkeyRecorder value={hotkey} onChange={handleHotkeyChange} />
         </div>
 
         {/* Skills dir */}

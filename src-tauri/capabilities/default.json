@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Launchpad default capabilities",
-  "windows": ["palette"],
+  "windows": ["palette", "settings"],
   "permissions": [
     "core:default",
     "core:window:allow-show",

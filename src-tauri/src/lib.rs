@@ -1,12 +1,12 @@
 #![allow(unexpected_cfgs)]
 
 use tauri::{
-    AppHandle, Emitter, Listener, Manager, LogicalSize, PhysicalPosition,
-    WebviewWindow,
-    menu::{MenuBuilder, MenuItem},
-    tray::TrayIconBuilder,
+    AppHandle, Emitter, Listener, Manager, LogicalSize, LogicalPosition, PhysicalPosition,
+    WebviewWindow, WebviewWindowBuilder, WebviewUrl,
+    tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use tauri_plugin_store::StoreExt;
 use include_dir::{include_dir, Dir};
 
 #[cfg(target_os = "macos")]
@@ -149,6 +149,41 @@ fn toggle_palette(app: &AppHandle) {
     }
 }
 
+fn toggle_settings_window(app: &AppHandle, tray_x: f64, tray_y: f64, tray_w: f64, tray_h: f64) {
+    let settings_width = 320.0_f64;
+    let settings_height = 280.0_f64;
+
+    let x = tray_x + (tray_w / 2.0) - (settings_width / 2.0);
+    let y = tray_y + tray_h + 4.0;
+
+    if let Some(window) = app.get_webview_window("settings") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            let _ = window.set_position(LogicalPosition::new(x, y));
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    } else {
+        let _ = WebviewWindowBuilder::new(
+            app,
+            "settings",
+            WebviewUrl::App("index.html".into()),
+        )
+        .title("Launchpad Settings")
+        .inner_size(settings_width, settings_height)
+        .position(x, y)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .visible(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .build();
+    }
+}
+
 // Non-async: runs on the main thread, required for macOS UI operations.
 #[tauri::command]
 fn hide_palette(app: AppHandle) -> Result<(), String> {
@@ -194,6 +229,50 @@ async fn get_project_dir() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn update_hotkey(app: AppHandle, old_shortcut: String, new_shortcut: String) -> Result<(), String> {
+    let old: Shortcut = old_shortcut.parse().map_err(|_| format!("Invalid shortcut: {}", old_shortcut))?;
+    let new_sc: Shortcut = new_shortcut.parse().map_err(|_| format!("Invalid shortcut: {}", new_shortcut))?;
+
+    let gs = app.global_shortcut();
+    gs.unregister(old).map_err(|e| e.to_string())?;
+
+    match gs.register(new_sc) {
+        Ok(_) => {
+            if let Ok(store) = app.store("settings.json") {
+                store.set("hotkey", serde_json::json!(&new_shortcut));
+                let _ = store.save();
+            }
+            Ok(())
+        }
+        Err(e) => {
+            let _ = gs.register(old);
+            Err(format!("Failed to register shortcut: {}", e))
+        }
+    }
+}
+
+#[tauri::command]
+fn get_current_hotkey(app: AppHandle) -> Result<String, String> {
+    match app.store("settings.json") {
+        Ok(store) => match store.get("hotkey") {
+            Some(v) => Ok(v.as_str().unwrap_or("Ctrl+Space").to_string()),
+            None => Ok("Ctrl+Space".to_string()),
+        },
+        Err(_) => Ok("Ctrl+Space".to_string()),
+    }
+}
+
+#[tauri::command]
+fn show_launcher(app: AppHandle) {
+    toggle_palette(&app);
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default()
@@ -212,9 +291,18 @@ pub fn run() {
             resize_palette,
             get_launchpad_dir,
             get_project_dir,
+            update_hotkey,
+            get_current_hotkey,
+            show_launcher,
+            quit_app,
         ])
         .setup(|app| {
-            let shortcut: Shortcut = "Ctrl+Space".parse().unwrap();
+            let hotkey_str = app.store("settings.json")
+                .ok()
+                .and_then(|store| store.get("hotkey").and_then(|v| v.as_str().map(String::from)))
+                .unwrap_or_else(|| "Ctrl+Space".to_string());
+            let shortcut: Shortcut = hotkey_str.parse()
+                .unwrap_or_else(|_| "Ctrl+Space".parse().unwrap());
 
             let handle = app.handle().clone();
             app.handle().plugin(
@@ -229,22 +317,23 @@ pub fn run() {
 
             app.global_shortcut().register(shortcut)?;
 
-            // System tray
-            let show = MenuItem::with_id(app, "show", "Show Launcher", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = MenuBuilder::new(app).item(&show).separator().item(&quit).build()?;
-
-            let toggle_handle = app.handle().clone();
+            // System tray — click opens settings window
             let _tray = TrayIconBuilder::with_id("launchpad-tray")
                 .icon(tauri::include_image!("./icons/32x32.png"))
                 .icon_as_template(true)
-                .menu(&menu)
                 .tooltip("Launchpad")
-                .show_menu_on_left_click(true)
-                .on_menu_event(move |app, event| match event.id().as_ref() {
-                    "show" => toggle_palette(&toggle_handle),
-                    "quit" => app.exit(0),
-                    _ => {}
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { rect, button, button_state, .. } = event {
+                        if button == MouseButton::Left && button_state == MouseButtonState::Up {
+                            let app = tray.app_handle();
+                            let scale = app.get_webview_window("palette")
+                                .and_then(|w| w.scale_factor().ok())
+                                .unwrap_or(2.0);
+                            let pos = rect.position.to_logical::<f64>(scale);
+                            let size = rect.size.to_logical::<f64>(scale);
+                            toggle_settings_window(app, pos.x, pos.y, size.width, size.height);
+                        }
+                    }
                 })
                 .build(app)?;
 
@@ -260,6 +349,14 @@ pub fn run() {
                 }
 
                 if let Some(window) = handle2.get_webview_window("palette") {
+                    let _ = window.hide();
+                }
+            });
+
+            // Auto-hide settings window on blur
+            let handle3 = app.handle().clone();
+            app.listen("settings-blur", move |_| {
+                if let Some(window) = handle3.get_webview_window("settings") {
                     let _ = window.hide();
                 }
             });
