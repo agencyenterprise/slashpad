@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Edit(*.rs)|Write(*.rs)",
+            "if": "Edit(**/*.rs)|Write(**/*.rs)",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/cargo-check.sh",
             "timeout": 60,
             "statusMessage": "Running cargo check..."
