@@ -33,6 +33,7 @@ export function usePalette() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const chatSessionRef = useRef<ChatSession | null>(null);
   const currentAssistantIdRef = useRef<string | null>(null);
+  const generationRef = useRef(0);
 
   // Session list
   const [recentSessions, setRecentSessions] = useState<SessionInfo[]>([]);
@@ -79,13 +80,20 @@ export function usePalette() {
       await chatSessionRef.current.kill();
       chatSessionRef.current = null;
     }
+    generationRef.current++;
+  }, []);
+
+  // Detach from session without killing it — sidecar keeps running in background
+  const detachSession = useCallback(() => {
+    chatSessionRef.current = null;
+    generationRef.current++;
   }, []);
 
   // Listen for palette show/hide events from Rust
   useEffect(() => {
     const unlisten = listen("palette-shown", () => {
-      // Kill any active session and reset — prefill "/" to show skills
-      killSession();
+      // Detach from any active session (keeps running in bg) and reset UI
+      detachSession();
       setInput("/");
       setMode("skills");
       setMessages([]);
@@ -101,7 +109,7 @@ export function usePalette() {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [killSession, refreshSessions, skills]);
+  }, [detachSession, refreshSessions, skills]);
 
   // Refocus input when agent becomes ready (disabled input drops focus)
   useEffect(() => {
@@ -150,7 +158,10 @@ export function usePalette() {
 
   // Shared event handler for chat sessions
   const makeOnEvent = useCallback(() => {
+    const gen = generationRef.current;
     return (event: ToolEvent) => {
+      // Ignore events from detached sessions
+      if (gen !== generationRef.current) return;
       if (event.type === "session_id" && event.sessionId) {
         setSessionId(event.sessionId);
         return;
@@ -252,7 +263,7 @@ export function usePalette() {
   // Start a new chat session
   const startChat = useCallback(
     async (prompt: string, skill?: Skill) => {
-      await killSession();
+      detachSession();
 
       setMode("chatting");
       setIsAgentReady(false);
@@ -286,7 +297,7 @@ export function usePalette() {
         onEvent({ type: "ready", timestamp: Date.now() });
       }
     },
-    [killSession, makeOnEvent]
+    [detachSession, makeOnEvent]
   );
 
   // Resume a past session

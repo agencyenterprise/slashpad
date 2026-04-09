@@ -16,7 +16,7 @@ const mode = payload.mode || "chat";
 if (mode === "list") {
   try {
     const all = await listSessions({ dir: payload.cwd || process.env.HOME });
-    const sessions = all.filter((s) => s.tag === "launchpad").slice(0, 20);
+    const sessions = all.slice(0, 20);
     for (const s of sessions) {
       emit({
         type: "session",
@@ -109,10 +109,18 @@ async function runTurn(userPrompt) {
   try {
     for await (const message of query({ prompt: userPrompt, options })) {
       if ("result" in message) {
-        // Capture session ID
+        // Capture session ID and tag immediately so session appears in history
         if (message.session_id) {
           sessionId = message.session_id;
           emit({ type: "session_id", sessionId, timestamp: Date.now() });
+
+          if (isFirstTurn && !payload.resume) {
+            const dir = cwd || process.env.HOME;
+            const title = userPrompt.length > 80 ? userPrompt.slice(0, 77) + "..." : userPrompt;
+            tagSession(sessionId, "launchpad", { dir }).catch(() => {});
+            renameSession(sessionId, title, { dir }).catch(() => {});
+            isFirstTurn = false;
+          }
         }
 
         if (message.result && !emittedText) {
@@ -132,18 +140,6 @@ async function runTurn(userPrompt) {
       }
     }
 
-    // Tag and rename session after first turn
-    if (isFirstTurn && sessionId && !payload.resume) {
-      const dir = cwd || process.env.HOME;
-      const title = userPrompt.length > 80 ? userPrompt.slice(0, 77) + "..." : userPrompt;
-      try {
-        await tagSession(sessionId, "launchpad", { dir });
-        await renameSession(sessionId, title, { dir });
-      } catch {
-        // Non-critical
-      }
-      isFirstTurn = false;
-    }
   } catch (e) {
     emit({ type: "error", error: e.message || String(e), timestamp: Date.now() });
   }
