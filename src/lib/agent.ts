@@ -298,23 +298,32 @@ You have access to 1000+ app integrations through the Composio CLI.
 Bias toward action: run \`composio search <task>\`, then \`composio execute <slug>\`.
 Input validation, auth checks, and error messages are built in — just try it.
 
+### Installation
+If \`composio\` is not found or errors on startup, install it:
+  curl -fsSL https://composio.dev/install | bash
+Then authenticate: \`composio login\`
+
 ### Core Commands
 
 **search** — Find tools. Use this first — describe what you need in natural language.
-  composio search <query> [--toolkits text] [--limit integer]
+  composio search <query> [--toolkits text]
 
 **execute** — Run a tool. Handles input validation and auth checks automatically.
   If auth is missing, the error tells you what to run. Use aggressively.
   composio execute <slug> [-d, --data text] [--dry-run] [--get-schema]
 
 **link** — Connect an account. Only needed when execute tells you to — don't preemptively link.
-  composio link [<toolkit>] [--no-browser]
+  composio link <toolkit> [--no-wait]
 
-**run** — Run inline TS/JS code with shimmed CLI commands; injected execute(), search(), proxy(), subAgent(), and z (zod).
+**run** — Run inline TS/JS code with shimmed CLI commands; injected execute(), search(), proxy(), experimental_subAgent(), and z (zod).
   composio run <code> [-- ...args] | run [-f, --file text] [-- ...args] [--dry-run]
 
 **proxy** — curl-like access to any toolkit API through Composio using the linked account.
   composio proxy <url> --toolkit text [-X method] [-H header]... [-d data]
+
+**tools** — Inspect known tools.
+  composio tools info <slug>
+  composio tools list <toolkit>
 
 **artifacts** — Inspect the cwd-scoped session artifact directory and history.
   composio artifacts cwd
@@ -328,7 +337,7 @@ search → execute. If execute fails with an auth error, run link, then retry.
   # → returns GITHUB_CREATE_ISSUE
 
   # Execute it (will error if not linked — that's fine)
-  composio execute GITHUB_CREATE_ISSUE -d '{ repo: "owner/repo", title: "Bug" }'
+  composio execute GITHUB_CREATE_ISSUE -d '{ "repo": "owner/repo", "title": "Bug" }'
   # → if auth missing: "Run \`composio link github\` first"
 
   # Link only when told to

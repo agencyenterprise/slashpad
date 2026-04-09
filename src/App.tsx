@@ -26,12 +26,15 @@ export default function App() {
 
   const [showSettings, setShowSettings] = useState(false);
 
-  // Auto-dismiss on blur (clicking outside)
+  // Auto-dismiss on blur (clicking outside), but not while chatting
+  // (agent tools like composio link can open browser tabs, stealing focus)
   useEffect(() => {
-    const handler = () => emit("palette-blur");
+    const handler = () => {
+      if (mode !== "chatting") emit("palette-blur");
+    };
     window.addEventListener("blur", handler);
     return () => window.removeEventListener("blur", handler);
-  }, []);
+  }, [mode]);
 
   // Intercept /settings command
   const handleInputChange = (value: string) => {
