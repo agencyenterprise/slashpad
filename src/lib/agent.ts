@@ -253,11 +253,17 @@ export async function loadSessionMessages(sessionId: string): Promise<ChatMessag
         try {
           const event = JSON.parse(line);
           if (event.type === "chat_message") {
+            const toolEvents = event.toolEvents || [];
+            const content = event.content || "";
+            const blocks: import("./types").ContentBlock[] = [];
+            if (content) blocks.push({ type: "text", content });
+            for (const te of toolEvents) blocks.push(te);
             messages.push({
               id: `loaded-${idCounter++}`,
               role: event.role,
-              content: event.content || "",
-              toolEvents: event.toolEvents || [],
+              content,
+              toolEvents,
+              blocks,
               timestamp: event.timestamp,
               status: "complete",
             });

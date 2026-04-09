@@ -20,37 +20,29 @@ function UserMessage({ message }: { message: ChatMessage }) {
 }
 
 function AssistantMessage({ message }: { message: ChatMessage }) {
-  const toolEvents = message.toolEvents.filter(
-    (e) => e.type === "tool_start" || e.type === "tool_end" || e.type === "error"
-  );
+  const blocks = message.blocks;
 
   return (
-    <div className="animate-fade-in">
-      {/* Tool activity */}
-      {toolEvents.length > 0 && (
-        <div className="mb-2 space-y-1">
-          {toolEvents.map((event, i) => (
-            <ToolLine key={i} event={event} />
-          ))}
-        </div>
-      )}
-
-      {/* Text content */}
-      {message.content && (
-        <div className="text-[13px] text-white/90 font-mono leading-relaxed whitespace-pre-wrap break-words">
-          {message.content}
-        </div>
+    <div className="animate-fade-in space-y-2">
+      {blocks.map((block, i) =>
+        block.type === "text" ? (
+          <div key={i} className="text-[13px] text-white/90 font-mono leading-relaxed whitespace-pre-wrap break-words">
+            {block.content}
+          </div>
+        ) : (
+          <ToolLine key={i} event={block} />
+        )
       )}
 
       {/* Streaming indicator */}
-      {message.status === "streaming" && !message.content && toolEvents.length === 0 && (
+      {message.status === "streaming" && blocks.length === 0 && (
         <div className="flex items-center gap-2 text-[13px] text-muted font-mono">
           <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse-subtle" />
           Thinking...
         </div>
       )}
 
-      {message.status === "streaming" && message.content && (
+      {message.status === "streaming" && blocks.some((b) => b.type === "text") && (
         <span className="inline-block w-1.5 h-3 bg-accent/60 animate-pulse-subtle ml-0.5 -mb-0.5" />
       )}
     </div>

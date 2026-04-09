@@ -4,33 +4,47 @@ import type { ToolEvent } from "../lib/types";
 export function ToolLine({ event }: { event: ToolEvent }) {
   if (event.type === "tool_start") {
     return (
-      <div className="flex items-center gap-2 text-[12px] font-mono animate-fade-in">
-        <span className="w-4 h-4 flex items-center justify-center">
-          <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse-subtle" />
-        </span>
-        <span className="text-muted">
-          Running <span className="text-accent-dim">{event.tool}</span>...
-        </span>
+      <div className="text-[12px] font-mono animate-fade-in">
+        <div className="flex items-center gap-2">
+          <span className="w-4 h-4 flex items-center justify-center">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse-subtle" />
+          </span>
+          <span className="text-muted">
+            Running <span className="text-accent-dim">{event.tool}</span>...
+          </span>
+        </div>
+        {event.args && Object.keys(event.args).length > 0 && (
+          <pre className="ml-6 mt-1 text-[11px] text-muted/70 whitespace-pre-wrap break-all max-h-[200px] overflow-y-auto">
+            {JSON.stringify(event.args, null, 2)}
+          </pre>
+        )}
       </div>
     );
   }
 
   if (event.type === "tool_end") {
     return (
-      <div className="flex items-center gap-2 text-[12px] font-mono animate-fade-in">
-        <span className="w-4 h-4 flex items-center justify-center text-success">
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-            <path d="M1 5.5L3.5 8L9 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-        </span>
-        <span className="text-muted">
-          <span className="text-accent-dim">{event.tool}</span>
-          {event.result && (
-            <span className="text-muted/60 ml-2 truncate max-w-[400px] inline-block align-bottom">
-              {event.result}
-            </span>
-          )}
-        </span>
+      <div className="text-[12px] font-mono animate-fade-in">
+        <div className="flex items-center gap-2">
+          <span className="w-4 h-4 flex items-center justify-center text-success">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+              <path d="M1 5.5L3.5 8L9 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </span>
+          <span className="text-muted">
+            <span className="text-accent-dim">{event.tool}</span>
+            {event.result && (
+              <span className="text-muted/60 ml-2 truncate max-w-[400px] inline-block align-bottom">
+                {event.result}
+              </span>
+            )}
+          </span>
+        </div>
+        {event.args && Object.keys(event.args).length > 0 && (
+          <pre className="ml-6 mt-1 text-[11px] text-muted/70 whitespace-pre-wrap break-all max-h-[200px] overflow-y-auto">
+            {JSON.stringify(event.args, null, 2)}
+          </pre>
+        )}
       </div>
     );
   }

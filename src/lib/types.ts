@@ -16,11 +16,16 @@ export interface ToolEvent {
   timestamp: number;
 }
 
+export type ContentBlock =
+  | { type: "text"; content: string }
+  | ToolEvent;
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   toolEvents: ToolEvent[];
+  blocks: ContentBlock[];
   timestamp: number;
   status: "streaming" | "complete" | "error";
 }

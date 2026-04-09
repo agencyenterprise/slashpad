@@ -125,8 +125,8 @@ async function runTurn(userPrompt) {
             emit({ type: "text_delta", delta: block.text, timestamp: Date.now() });
             emittedText = true;
           } else if (block.type === "tool_use") {
-            emit({ type: "tool_start", tool: block.name, timestamp: Date.now() });
-            emit({ type: "tool_end", tool: block.name, args: block.input, timestamp: Date.now() });
+            emit({ type: "tool_start", tool: block.name, args: block.input, timestamp: Date.now() });
+            emit({ type: "tool_end", tool: block.name, timestamp: Date.now() });
           }
         }
       }

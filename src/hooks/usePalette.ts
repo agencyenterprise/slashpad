@@ -173,6 +173,7 @@ export function usePalette() {
               role: "assistant",
               content: "",
               toolEvents: [],
+              blocks: [],
               timestamp: Date.now(),
               status: "streaming",
             };
@@ -184,11 +185,14 @@ export function usePalette() {
 
       if (event.type === "text_delta" && event.delta) {
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === currentAssistantIdRef.current
-              ? { ...m, content: m.content + event.delta }
-              : m
-          )
+          prev.map((m) => {
+            if (m.id !== currentAssistantIdRef.current) return m;
+            const lastBlock = m.blocks[m.blocks.length - 1];
+            const updatedBlocks = lastBlock && lastBlock.type === "text"
+              ? [...m.blocks.slice(0, -1), { type: "text" as const, content: lastBlock.content + event.delta }]
+              : [...m.blocks, { type: "text" as const, content: event.delta! }];
+            return { ...m, content: m.content + event.delta, blocks: updatedBlocks };
+          })
         );
       }
 
@@ -196,7 +200,7 @@ export function usePalette() {
         setMessages((prev) =>
           prev.map((m) =>
             m.id === currentAssistantIdRef.current
-              ? { ...m, toolEvents: [...m.toolEvents, event] }
+              ? { ...m, toolEvents: [...m.toolEvents, event], blocks: [...m.blocks, event] }
               : m
           )
         );
@@ -223,6 +227,7 @@ export function usePalette() {
               role: "assistant" as const,
               content: errorContent,
               toolEvents: [],
+              blocks: [{ type: "text" as const, content: errorContent }],
               timestamp: Date.now(),
               status: "error" as const,
             },
@@ -260,6 +265,7 @@ export function usePalette() {
         role: "user",
         content: prompt,
         toolEvents: [],
+        blocks: [{ type: "text" as const, content: prompt }],
         timestamp: Date.now(),
         status: "complete",
       };
@@ -314,6 +320,7 @@ export function usePalette() {
         role: "user",
         content: content.trim(),
         toolEvents: [],
+        blocks: [{ type: "text" as const, content: content.trim() }],
         timestamp: Date.now(),
         status: "complete",
       };
