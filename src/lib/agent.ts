@@ -61,7 +61,7 @@ export class ChatSession {
 
   /** @internal — called by startChatSession */
   async _start(payload: Record<string, unknown>, runnerPath: string): Promise<void> {
-    const base64Payload = btoa(JSON.stringify(payload));
+    const base64Payload = btoa(Array.from(new TextEncoder().encode(JSON.stringify(payload)), (b) => String.fromCharCode(b)).join(""));
     this.cmd = Command.create("node-agent", [runnerPath, base64Payload]);
 
     let buffer = "";
@@ -178,7 +178,7 @@ export async function listRecentSessions(): Promise<SessionInfo[]> {
     cwd: launchpadDir,
   };
 
-  const base64Payload = btoa(JSON.stringify(payload));
+  const base64Payload = btoa(Array.from(new TextEncoder().encode(JSON.stringify(payload)), (b) => String.fromCharCode(b)).join(""));
   const cmd = Command.create("node-agent", [runnerPath, base64Payload]);
 
   return new Promise((resolve, reject) => {
@@ -235,7 +235,7 @@ export async function loadSessionMessages(sessionId: string): Promise<ChatMessag
     cwd: launchpadDir,
   };
 
-  const base64Payload = btoa(JSON.stringify(payload));
+  const base64Payload = btoa(Array.from(new TextEncoder().encode(JSON.stringify(payload)), (b) => String.fromCharCode(b)).join(""));
   const cmd = Command.create("node-agent", [runnerPath, base64Payload]);
 
   return new Promise((resolve, reject) => {

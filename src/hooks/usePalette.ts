@@ -203,13 +203,31 @@ export function usePalette() {
       }
 
       if (event.type === "error") {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === currentAssistantIdRef.current
-              ? { ...m, status: "error" as const, content: m.content || event.error || "An error occurred" }
-              : m
-          )
-        );
+        const errorContent = event.error || "An error occurred";
+        setMessages((prev) => {
+          const hasAssistant = currentAssistantIdRef.current != null &&
+            prev.some((m) => m.id === currentAssistantIdRef.current);
+          if (hasAssistant) {
+            return prev.map((m) =>
+              m.id === currentAssistantIdRef.current
+                ? { ...m, status: "error" as const, content: m.content || errorContent }
+                : m
+            );
+          }
+          const newId = nextMsgId();
+          currentAssistantIdRef.current = newId;
+          return [
+            ...prev,
+            {
+              id: newId,
+              role: "assistant" as const,
+              content: errorContent,
+              toolEvents: [],
+              timestamp: Date.now(),
+              status: "error" as const,
+            },
+          ];
+        });
       }
 
       if (event.type === "complete") {
