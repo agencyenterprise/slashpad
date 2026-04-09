@@ -1,6 +1,8 @@
 use tauri::{
     AppHandle, Emitter, Listener, Manager, LogicalSize, PhysicalPosition,
     WebviewWindow,
+    menu::{MenuBuilder, MenuItem},
+    tray::TrayIconBuilder,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use include_dir::{include_dir, Dir};
@@ -143,8 +145,9 @@ fn toggle_palette(app: &AppHandle) {
     }
 }
 
+// Non-async: runs on the main thread, required for macOS UI operations.
 #[tauri::command]
-async fn hide_palette(app: AppHandle) -> Result<(), String> {
+fn hide_palette(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         if let Ok(panel) = app.get_webview_panel("palette") {
@@ -160,7 +163,7 @@ async fn hide_palette(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn resize_palette(app: AppHandle, height: f64) -> Result<(), String> {
+fn resize_palette(app: AppHandle, height: f64) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("palette") {
         let scale = window.scale_factor().map_err(|e| e.to_string())?;
         let current = window.outer_size().map_err(|e| e.to_string())?;
@@ -221,6 +224,25 @@ pub fn run() {
             )?;
 
             app.global_shortcut().register(shortcut)?;
+
+            // System tray
+            let show = MenuItem::with_id(app, "show", "Show Launcher", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = MenuBuilder::new(app).item(&show).separator().item(&quit).build()?;
+
+            let toggle_handle = app.handle().clone();
+            let _tray = TrayIconBuilder::with_id("launchpad-tray")
+                .icon(tauri::include_image!("./icons/32x32.png"))
+                .icon_as_template(true)
+                .menu(&menu)
+                .tooltip("Launchpad")
+                .show_menu_on_left_click(true)
+                .on_menu_event(move |app, event| match event.id().as_ref() {
+                    "show" => toggle_palette(&toggle_handle),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .build(app)?;
 
             // Listen for blur events from the frontend to auto-hide
             let handle2 = app.handle().clone();
