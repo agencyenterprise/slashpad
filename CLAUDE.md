@@ -49,6 +49,10 @@ There are no tests or linting configured.
 - 720x90 frameless, transparent, always-on-top, hidden by default, skip taskbar
 - macOS private API enabled for advanced window management
 
+## macOS Threading Rule
+
+**All NSPanel/window UI operations (show, hide, setLevel, etc.) MUST run on the main thread.** Tauri `async fn` commands run on a thread pool and will crash. Use `fn` (not `async fn`) for Tauri commands that touch windows, and wrap `app.listen` callbacks in `run_on_main_thread` if they call panel/window methods.
+
 ## Key Patterns
 
 - Path alias: `@/*` maps to `src/*`

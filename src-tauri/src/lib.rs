@@ -25,7 +25,7 @@ fn seed_bundled_skill(skills_dir: &str, skill_name: &str, dir: &Dir<'static>) {
     if std::path::Path::new(&dest).exists() {
         return;
     }
-    if let Err(e) = extract_dir(dir, &std::path::Path::new(&dest)) {
+    if let Err(e) = extract_dir(dir, std::path::Path::new(&dest)) {
         eprintln!("Failed to seed skill '{}': {}", skill_name, e);
     }
 }
@@ -114,7 +114,7 @@ fn toggle_palette(app: &AppHandle) {
                         ns_win.setLevel_(8); // NSModalPanelWindowLevel
                         ns_win.setHidesOnDeactivate_(NO);
                         let behavior: u64 = (1 << 0) | (1 << 6) | (1 << 8);
-                        ns_win.setCollectionBehavior_(std::mem::transmute(behavior));
+                        ns_win.setCollectionBehavior_(std::mem::transmute::<u64, cocoa::appkit::NSWindowCollectionBehavior>(behavior));
                     }
                 }
 
@@ -338,19 +338,23 @@ pub fn run() {
                 .build(app)?;
 
             // Listen for blur events from the frontend to auto-hide
+            // Must dispatch to main thread — NSPanel UI ops crash from background threads
             let handle2 = app.handle().clone();
             app.listen("palette-blur", move |_| {
-                #[cfg(target_os = "macos")]
-                {
-                    if let Ok(panel) = handle2.get_webview_panel("palette") {
-                        panel.hide();
-                        return;
+                let h = handle2.clone();
+                let _ = handle2.run_on_main_thread(move || {
+                    #[cfg(target_os = "macos")]
+                    {
+                        if let Ok(panel) = h.get_webview_panel("palette") {
+                            panel.hide();
+                            return;
+                        }
                     }
-                }
 
-                if let Some(window) = handle2.get_webview_window("palette") {
-                    let _ = window.hide();
-                }
+                    if let Some(window) = h.get_webview_window("palette") {
+                        let _ = window.hide();
+                    }
+                });
             });
 
             // Auto-hide settings window on blur
@@ -398,7 +402,7 @@ pub fn run() {
 
                         ns_window.setLevel_(8);
                         let behavior: u64 = (1 << 0) | (1 << 6) | (1 << 8);
-                        ns_window.setCollectionBehavior_(std::mem::transmute(behavior));
+                        ns_window.setCollectionBehavior_(std::mem::transmute::<u64, cocoa::appkit::NSWindowCollectionBehavior>(behavior));
 
                         let bg_color = NSColor::colorWithRed_green_blue_alpha_(
                             nil, 0.0, 0.0, 0.0, 0.0,

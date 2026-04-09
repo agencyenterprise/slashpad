@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { emit } from "@tauri-apps/api/event";
 import { usePalette } from "./hooks/usePalette";
 import { CommandInput } from "./components/CommandInput";
 import { SkillList } from "./components/SkillList";
@@ -24,6 +25,13 @@ export default function App() {
   } = usePalette();
 
   const [showSettings, setShowSettings] = useState(false);
+
+  // Auto-dismiss on blur (clicking outside)
+  useEffect(() => {
+    const handler = () => emit("palette-blur");
+    window.addEventListener("blur", handler);
+    return () => window.removeEventListener("blur", handler);
+  }, []);
 
   // Intercept /settings command
   const handleInputChange = (value: string) => {
