@@ -74,3 +74,31 @@ pub fn palette_window_settings() -> iced::window::Settings {
         ..Default::default()
     }
 }
+
+/// Compact settings-panel window settings. Initial position must be supplied
+/// by the caller (so the tray-click handler can anchor it under the tray
+/// icon). Mirrors the pre-rewrite Tauri `TraySettings` window dimensions.
+///
+/// The settings window is intentionally NOT put through our `LaunchpadPanel`
+/// NSPanel subclass — repeated attempts to class-swap it crashed inside
+/// AppKit's redraw notification machinery, and we haven't root-caused the
+/// difference from the palette's (working) NSPanel path yet. Relying on
+/// iced's native window settings (borderless, transparent, always-on-top)
+/// gives us the right visual without the crash risk. Trade-off: the
+/// settings window briefly activates the app on show, and it won't float
+/// over fullscreen apps. Fixable later.
+pub fn settings_window_settings(x: f32, y: f32) -> iced::window::Settings {
+    iced::window::Settings {
+        size: iced::Size::new(340.0, 280.0),
+        position: iced::window::Position::Specific(iced::Point::new(x, y)),
+        min_size: None,
+        max_size: None,
+        visible: true,
+        resizable: false,
+        decorations: false,
+        transparent: true,
+        level: iced::window::Level::AlwaysOnTop,
+        exit_on_close_request: true,
+        ..Default::default()
+    }
+}

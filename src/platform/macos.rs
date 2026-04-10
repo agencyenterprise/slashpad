@@ -21,6 +21,7 @@ use objc2_app_kit::{
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 /// Dispatches the closure onto the main thread via libdispatch's
 /// `dispatch_async_f(dispatch_get_main_queue, ...)`. Needed for NSPanel /
@@ -132,6 +133,27 @@ unsafe fn convert_nswindow_to_launchpad_panel(ns_window_ptr: *mut c_void) {
         ns_window_ptr as *mut AnyObject,
         panel_cls as *const AnyClass,
     );
+}
+
+/// Minimal NSPanel treatment for the settings window: swap the Objective-C
+/// class to `LaunchpadPanel` so `canBecomeKeyWindow` / `canBecomeMainWindow`
+/// return `YES`, and nothing else. We explicitly avoid touching the style
+/// mask / background color / collection behavior because those paths fire
+/// AppKit redraw notifications that have crashed the settings-window open
+/// flow repeatedly (the palette is safer because it's created with
+/// `visible: false`, so there are no live observers when we class-swap).
+///
+/// Without this, a borderless iced window can't become key at all on
+/// macOS, which means the user can't type into the API-key field AND
+/// the window never fires an `Unfocused` event on click-outside — so
+/// the blur-close path never triggers.
+///
+/// Safety: `ns_window_ptr` must be a valid `NSWindow *`.
+pub unsafe fn make_window_key_capable(ns_window_ptr: *mut c_void) {
+    if ns_window_ptr.is_null() {
+        return;
+    }
+    convert_nswindow_to_launchpad_panel(ns_window_ptr);
 }
 
 /// Apply the palette-style floating panel treatment to a raw `NSWindow*`
@@ -274,21 +296,97 @@ unsafe fn mouse_location() -> NSPoint {
     pt
 }
 
-/// Best-effort retrieval of the first NSWindow owned by the current app.
-/// iced + winit create exactly one window for our use case, so the first
-/// entry in `NSApp.windows` is the palette window.
+/// Extract the `NSWindow *` pointer from an iced `WindowHandle`. Used with
+/// `iced::window::run_with_handle(id, |handle| ...)` so we can apply NSPanel
+/// treatment to a specific iced window by id, rather than guessing via
+/// `NSApp.windows()` (which breaks in multi-window setups because the tray
+/// icon's `NSStatusBarWindow` and both of our own windows all show up).
+///
+/// Returns null if the handle isn't an AppKit one (shouldn't happen on macOS).
+///
+/// Safety: `handle` must refer to a live winit window. The returned pointer
+/// is only valid while that window is alive; callers should finish whatever
+/// NSWindow ops they need before the closure running this returns.
+pub unsafe fn ns_window_from_handle<H: HasWindowHandle>(handle: &H) -> *mut c_void {
+    let Ok(window_handle) = handle.window_handle() else {
+        return std::ptr::null_mut();
+    };
+    let RawWindowHandle::AppKit(appkit) = window_handle.as_raw() else {
+        return std::ptr::null_mut();
+    };
+    // `handle.ns_view` is a `NonNull<c_void>` pointing at an NSView. Ask it
+    // for its parent NSWindow via `[nsView window]`.
+    let view_ptr: *mut AnyObject = appkit.ns_view.as_ptr().cast();
+    let window_ptr: *mut AnyObject = msg_send![view_ptr, window];
+    window_ptr as *mut c_void
+}
+
+/// Backing scale factor of the primary screen (menu-bar screen). Used to
+/// convert `tray-icon`'s physical-pixel `Rect` into iced/winit logical
+/// coordinates. Returns `2.0` as a Retina-typical fallback if the primary
+/// screen can't be resolved (extremely unlikely inside a live app).
+pub fn primary_scale_factor() -> f64 {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return 2.0;
+    };
+    NSScreen::mainScreen(mtm)
+        .map(|screen| screen.backingScaleFactor())
+        .unwrap_or(2.0)
+}
+
+/// Retrieve the NSWindow pointer for iced's palette window.
+///
+/// Iterates `NSApp.windows()` and returns the first entry whose Objective-C
+/// class name ends in `WinitWindow` (iced/winit's window class) or
+/// `LaunchpadPanel` (our custom NSPanel subclass, after the class swap).
+///
+/// Two subtleties:
+///
+/// 1. **KVO dynamic subclasses**: when something registers a KVO observer on
+///    the winit window, Cocoa swaps the instance's class to an automatically-
+///    generated subclass named `NSKVONotifying_WinitWindow` (prefix added by
+///    AppKit). An exact-match check for `"WinitWindow"` misses this. We match
+///    on the suffix instead — the original class name is always at the end.
+///
+/// 2. **tray-icon's NSStatusBarWindow**: the `tray-icon` crate adds an
+///    `NSStatusBarWindow` to `NSApp.windows()` as soon as the menu-bar tray is
+///    created. That window is a private AppKit NSWindow subclass; swapping
+///    its class to `LaunchpadPanel` + calling `setBackgroundColor` crashes
+///    AppKit with a `viewNeedsDisplayInRectNotification:` unrecognized-selector
+///    exception. The suffix filter naturally skips it.
+///
+/// Returns null if iced's window hasn't been created yet (callers already
+/// handle null — `apply_palette_style` is a no-op on a null pointer, and the
+/// self-healing `show_palette()` path re-runs the style application on every
+/// hotkey press).
 pub unsafe fn first_app_window_ptr() -> *mut c_void {
+    extern "C" {
+        fn object_getClassName(obj: *const AnyObject) -> *const i8;
+    }
+
     let Some(mtm) = MainThreadMarker::new() else {
         return std::ptr::null_mut();
     };
     let app = NSApplication::sharedApplication(mtm);
     let windows = app.windows();
-    if windows.count() == 0 {
-        return std::ptr::null_mut();
+    let count = windows.count();
+    for i in 0..count {
+        let window: Retained<NSWindow> = unsafe { windows.objectAtIndex(i) };
+        let obj_ptr = (&*window as *const NSWindow) as *const AnyObject;
+        let name_ptr = object_getClassName(obj_ptr);
+        if name_ptr.is_null() {
+            continue;
+        }
+        let name_bytes = std::ffi::CStr::from_ptr(name_ptr).to_bytes();
+        let Ok(name_str) = std::str::from_utf8(name_bytes) else {
+            continue;
+        };
+        if name_str.ends_with("WinitWindow") || name_str.ends_with("LaunchpadPanel") {
+            let ptr: *const NSWindow = &*window;
+            return ptr as *mut c_void;
+        }
     }
-    let window: Retained<NSWindow> = unsafe { windows.objectAtIndex(0) };
-    let ptr: *const NSWindow = &*window;
-    ptr as *mut c_void
+    std::ptr::null_mut()
 }
 
 /// Shim that suppresses an unused import on non-macos targets.

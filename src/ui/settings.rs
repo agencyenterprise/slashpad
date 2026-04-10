@@ -63,7 +63,40 @@ pub fn view<'a>(
     ]
     .spacing(6);
 
-    let body = column![header, api_row, hotkey_row].spacing(14).padding(16);
+    let actions = row![
+        button(text("Show Launcher").size(12).color(super::theme::TEXT))
+            .on_press(Message::HotkeyPressed)
+            .padding([8, 14])
+            .style(|_, _| iced::widget::button::Style {
+                background: Some(iced::Background::Color(super::theme::SURFACE_2)),
+                text_color: super::theme::TEXT,
+                border: iced::Border {
+                    color: super::theme::SURFACE_3,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                ..Default::default()
+            }),
+        iced::widget::horizontal_space(),
+        button(text("Quit Launchpad").size(12).color(super::theme::TEXT))
+            .on_press(Message::QuitRequested)
+            .padding([8, 14])
+            .style(|_, _| iced::widget::button::Style {
+                background: Some(iced::Background::Color(super::theme::DANGER)),
+                text_color: super::theme::TEXT,
+                border: iced::Border {
+                    color: iced::Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: 8.0.into(),
+                },
+                ..Default::default()
+            }),
+    ]
+    .spacing(8);
+
+    let body = column![header, api_row, hotkey_row, actions]
+        .spacing(14)
+        .padding(16);
 
     container(body)
         .width(Length::Fill)

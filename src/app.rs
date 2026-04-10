@@ -1,4 +1,15 @@
-//! Iced application — state machine ported from `usePalette.ts`.
+//! Iced daemon — multi-window state machine.
+//!
+//! Two windows live under a single `iced::daemon` application:
+//!
+//! - **Palette**: the long-lived launcher window. Opened once at startup,
+//!   then shown/hidden via raw `orderFrontRegardless` / `orderOut` so the
+//!   NSPanel class-swap and style mask persist across hotkey toggles.
+//! - **Settings**: a compact, tray-anchored panel. Opened on demand via
+//!   `iced::window::open(...)` with a `Position::Specific` under the tray
+//!   icon, closed on Esc / blur / CloseSettings, or when the user clicks
+//!   Save or Quit. Each open creates a fresh window id; the close_events
+//!   subscription drains the cleanup.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -24,6 +35,19 @@ pub enum External {
     RecentSessions(Vec<SessionInfo>),
     /// Background-loaded history messages for a resumed session.
     HistoryLoaded(Vec<ChatMessageView>),
+    /// Left-click on the menu-bar tray icon — opens the settings window
+    /// anchored below the tray icon. Coordinates are logical pixels in
+    /// winit's top-left-origin system rooted at the primary monitor.
+    TrayClicked {
+        tray_x: f64,
+        tray_y: f64,
+        tray_w: f64,
+        tray_h: f64,
+    },
+    /// Tray context-menu "Show Launcher" — same semantics as the hotkey.
+    TrayMenuShow,
+    /// Tray context-menu "Quit Launchpad" — graceful shutdown.
+    TrayMenuQuit,
 }
 
 static EXTERNAL_RX: Mutex<Option<mpsc::UnboundedReceiver<External>>> = Mutex::new(None);
@@ -56,24 +80,41 @@ pub enum Message {
     SelectSkill(usize),
     SelectSession(usize),
     HotkeyPressed,
-    PaletteBlurred,
+    /// An iced window lost focus. Carries the window id so we can dispatch
+    /// palette-vs-settings blur handling separately.
+    WindowBlurred(iced::window::Id),
+    /// An iced window closed. Fired by the `close_events` subscription so
+    /// we can null out `palette_window_id` / `settings_window_id`.
+    WindowClosed(iced::window::Id),
     SidecarEvent(SidecarEvent),
     RecentSessionsLoaded(Vec<SessionInfo>),
     HistoryLoaded(Vec<ChatMessageView>),
+    /// Close the settings window (bound to the "esc" button in the
+    /// settings panel header).
     CloseSettings,
     ApiKeyInputChanged(String),
     SaveApiKey,
-    /// Resolved once iced creates its initial window — we cache the id so
-    /// later `window::resize` / `window::move_to` calls know which window to
-    /// target.
-    WindowIdResolved(Option<iced::window::Id>),
+    /// Tray left-click → open a new settings window anchored below the
+    /// tray icon at the given logical-pixel rect.
+    TrayOpenSettings {
+        tray_x: f64,
+        tray_y: f64,
+        tray_w: f64,
+        tray_h: f64,
+    },
+    /// Tray menu "Quit Launchpad" → drop sidecar, exit process.
+    QuitRequested,
 }
 
 /// Root application state.
 pub struct Launchpad {
     pub input: String,
     pub mode: Mode,
-    pub visible: bool,
+    /// Whether the palette window is currently being displayed on screen.
+    /// The palette NSWindow is long-lived and hidden via `orderOut`; this
+    /// flag tracks the logical visibility state so `toggle_palette()` knows
+    /// whether to show or hide it.
+    pub palette_visible: bool,
 
     pub all_skills: Vec<Skill>,
     pub filtered_skills: Vec<Skill>,
@@ -94,15 +135,27 @@ pub struct Launchpad {
 
     pub sidecar: Option<SpawnedSidecar>,
 
-    /// Cached iced window id, resolved asynchronously on startup via
-    /// `iced::window::get_oldest()`. `None` during the brief window between
-    /// `Launchpad::new()` returning and iced processing the first frame.
-    pub window_id: Option<iced::window::Id>,
+    /// The persistent launcher window. Known as soon as
+    /// `iced::window::open(...)` returns; the window itself is created
+    /// asynchronously when the daemon processes the Open action.
+    pub palette_window_id: Option<iced::window::Id>,
+    /// The tray-anchored settings window. `Some` only while a settings
+    /// window is currently open; set when the tray is clicked and cleared
+    /// by the `WindowClosed` subscription when the user dismisses it.
+    pub settings_window_id: Option<iced::window::Id>,
+    /// Timestamp of the last settings-window open. Used to debounce the
+    /// `Unfocused` event that AppKit fires during the initial activation
+    /// hand-off — without NSPanel non-activating treatment, a fresh
+    /// settings window activates the app briefly, then immediately blurs,
+    /// which would close it before the user can interact. Any blur event
+    /// within `SETTINGS_BLUR_GRACE_MS` of open is ignored.
+    pub settings_opened_at: Option<std::time::Instant>,
 }
 
 impl Launchpad {
     pub fn new() -> (Self, Task<Message>) {
-        init_external_bus();
+        // `init_external_bus()` is called from `main()` before iced starts,
+        // so `external_sender()` is ready for the hotkey forwarder below.
 
         let settings = AppSettings::load_or_default();
         let all_skills = skills::load_skills().unwrap_or_default();
@@ -127,10 +180,16 @@ impl Launchpad {
             let _ = tx.send(External::RecentSessions(sessions));
         });
 
+        // `iced::daemon` starts with no windows. Open the palette here; the
+        // id is known immediately (even before the window exists), and
+        // `open_palette_task` drives iced to actually create it.
+        let (palette_id, open_palette_task) =
+            iced::window::open(ui::theme::palette_window_settings());
+
         let state = Self {
             input: String::new(),
             mode: Mode::Idle,
-            visible: false,
+            palette_visible: false,
             filtered_skills: all_skills.clone(),
             all_skills,
             selected_skill_index: 0,
@@ -145,40 +204,62 @@ impl Launchpad {
             api_key_input: String::new(),
             recording_hotkey: false,
             sidecar: None,
-            window_id: None,
+            palette_window_id: Some(palette_id),
+            settings_window_id: None,
+            settings_opened_at: None,
         };
 
-        // Post-launch hook: apply NSPanel treatment to the palette window once
-        // iced/winit has created it. We spawn a std thread that pings the main
-        // thread via dispatch_async so the NSPanel ops run where AppKit expects.
-        // The delay gives iced/winit enough time to create the NSWindow.
+        // Tray icon creation must happen on the main thread AFTER the
+        // NSApplication event loop is running; tray-icon's docs are
+        // explicit about this. `dispatch_main_async` enqueues onto the
+        // main dispatch queue, which is drained by NSApp's CFRunLoop once
+        // `run_with` hands control to winit.
         #[cfg(target_os = "macos")]
-        {
-            std::thread::spawn(|| {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                crate::platform::macos::dispatch_main_async(|| unsafe {
-                    let ptr = crate::platform::macos::first_app_window_ptr();
-                    crate::platform::macos::apply_palette_style(ptr);
-                    crate::platform::macos::order_out(ptr);
-                });
-            });
-        }
+        crate::platform::macos::dispatch_main_async(|| {
+            crate::tray::init();
+        });
 
-        // Resolve the iced window id so subsequent resize / move_to calls can
-        // target it. The get_oldest() task resolves once iced has created its
-        // first window (typically within the first frame).
-        let init = Task::batch([
-            text_input::focus(INPUT_ID.clone()),
-            iced::window::get_oldest().map(Message::WindowIdResolved),
-        ]);
+        // Palette NSPanel treatment: swap the class to `LaunchpadPanel`,
+        // set the non-activating style mask / modal panel level /
+        // fullscreen-auxiliary collection behavior, then orderOut so the
+        // window starts hidden. Runs as an iced task so we can target the
+        // exact window id via `run_with_handle` — no NSApp.windows()
+        // guessing, which breaks as soon as a second iced window exists.
+        let palette_style_task: Task<Message> =
+            iced::window::run_with_handle(palette_id, |handle| {
+                #[cfg(target_os = "macos")]
+                unsafe {
+                    let ns_window = crate::platform::macos::ns_window_from_handle(&handle);
+                    crate::platform::macos::apply_palette_style(ns_window);
+                    crate::platform::macos::order_out(ns_window);
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = handle;
+            })
+            .discard();
+
+        // Sequencing matters: the palette NSWindow must exist before
+        // `run_with_handle` fires, and the text_input focus targets the
+        // palette's command input so it wants a live window too.
+        // `.chain()` runs the next task only after the previous one
+        // resolves; `open_palette_task` resolves when the Open action
+        // has been fully processed by the runtime.
+        let init = open_palette_task
+            .discard::<Message>()
+            .chain(palette_style_task)
+            .chain(text_input::focus(INPUT_ID.clone()));
         (state, init)
     }
 
-    pub fn title(&self) -> String {
-        "Launchpad".to_string()
+    pub fn title(&self, window_id: iced::window::Id) -> String {
+        if Some(window_id) == self.settings_window_id {
+            "Launchpad Settings".to_string()
+        } else {
+            "Launchpad".to_string()
+        }
     }
 
-    pub fn theme(&self) -> Theme {
+    pub fn theme(&self, _window_id: iced::window::Id) -> Theme {
         ui::theme::dark_theme()
     }
 
@@ -193,24 +274,19 @@ impl Launchpad {
                 Key::Named(Named::ArrowDown) => Some(Message::NavDown),
                 _ => None,
             }),
-            iced::event::listen_with(|event, _status, _window| match event {
+            iced::event::listen_with(|event, _status, window_id| match event {
                 iced::Event::Window(iced::window::Event::Unfocused) => {
-                    Some(Message::PaletteBlurred)
+                    Some(Message::WindowBlurred(window_id))
                 }
                 _ => None,
             }),
+            iced::window::close_events().map(Message::WindowClosed),
         ])
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::InputChanged(value) => {
-                // Intercept the /settings command.
-                if value == "/settings" {
-                    self.mode = Mode::Settings;
-                    self.input.clear();
-                    return self.resize_task();
-                }
                 self.input = value.clone();
 
                 // Skill filtering
@@ -235,6 +311,14 @@ impl Launchpad {
             Message::Submit => self.handle_submit(),
 
             Message::EscapePressed => {
+                // Settings window takes precedence: close it if it's open.
+                // The on_key_press subscription fires regardless of which
+                // iced window is focused, so this handles both "Esc while
+                // settings is focused" and "Esc while palette is focused
+                // with settings still open somewhere".
+                if let Some(settings_id) = self.settings_window_id {
+                    return iced::window::close(settings_id);
+                }
                 match self.mode {
                     Mode::Chatting => {
                         self.kill_session();
@@ -249,10 +333,6 @@ impl Launchpad {
                             self.resize_task(),
                             text_input::focus(INPUT_ID.clone()),
                         ])
-                    }
-                    Mode::Settings => {
-                        self.mode = Mode::Idle;
-                        self.resize_task()
                     }
                     _ => self.hide_palette(),
                 }
@@ -332,18 +412,50 @@ impl Launchpad {
             }
 
             Message::CloseSettings => {
-                self.mode = Mode::Idle;
-                self.resize_task()
-            }
-
-            Message::PaletteBlurred => {
-                // Only auto-hide if not mid-chat — agent tools (e.g. composio link)
-                // may open browser tabs and steal focus.
-                if self.mode != Mode::Chatting && self.visible {
-                    self.hide_palette()
+                if let Some(id) = self.settings_window_id {
+                    iced::window::close(id)
                 } else {
                     Task::none()
                 }
+            }
+
+            Message::WindowBlurred(window_id) => {
+                if Some(window_id) == self.settings_window_id {
+                    // Settings window: close on blur, matching the Tauri
+                    // behavior — BUT ignore the spurious Unfocused event
+                    // AppKit fires during initial activation hand-off,
+                    // within `SETTINGS_BLUR_GRACE_MS` of open.
+                    let grace = std::time::Duration::from_millis(Self::SETTINGS_BLUR_GRACE_MS);
+                    let within_grace = self
+                        .settings_opened_at
+                        .map(|t| t.elapsed() < grace)
+                        .unwrap_or(false);
+                    if within_grace {
+                        Task::none()
+                    } else {
+                        iced::window::close(window_id)
+                    }
+                } else if Some(window_id) == self.palette_window_id {
+                    // Palette lost focus → hide (unless chatting; agent
+                    // tools can steal focus by opening browser tabs).
+                    if self.mode != Mode::Chatting && self.palette_visible {
+                        self.hide_palette()
+                    } else {
+                        Task::none()
+                    }
+                } else {
+                    Task::none()
+                }
+            }
+
+            Message::WindowClosed(window_id) => {
+                if Some(window_id) == self.settings_window_id {
+                    self.settings_window_id = None;
+                    self.settings_opened_at = None;
+                } else if Some(window_id) == self.palette_window_id {
+                    self.palette_window_id = None;
+                }
+                Task::none()
             }
 
             Message::ApiKeyInputChanged(v) => {
@@ -359,26 +471,42 @@ impl Launchpad {
                 Task::none()
             }
 
-            Message::WindowIdResolved(id) => {
-                self.window_id = id;
-                Task::none()
+            Message::TrayOpenSettings {
+                tray_x,
+                tray_y,
+                tray_w,
+                tray_h,
+            } => self.open_settings_window(tray_x, tray_y, tray_w, tray_h),
+
+            Message::QuitRequested => {
+                // Drop the sidecar (tokio kill_on_drop handles child cleanup)
+                // and exit the process. Bypasses iced's graceful shutdown
+                // because that path is fiddly with our NSPanel wrapping.
+                self.sidecar = None;
+                std::process::exit(0)
             }
         }
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
-        let input = ui::command_input::view(&self.input, self.mode, self.is_agent_ready);
+    pub fn view(&self, window_id: iced::window::Id) -> Element<'_, Message> {
+        // Settings window: always shows the settings panel.
+        if Some(window_id) == self.settings_window_id {
+            return container(ui::settings::view(
+                &self.api_key_input,
+                &self.settings.hotkey,
+                self.recording_hotkey,
+            ))
+            .padding(8)
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
+            .into();
+        }
 
+        // Palette window: command input + mode-dependent content below.
+        let input = ui::command_input::view(&self.input, self.mode, self.is_agent_ready);
         let mut stack: Column<'_, Message> = column![input].spacing(4);
 
         match self.mode {
-            Mode::Settings => {
-                stack = stack.push(ui::settings::view(
-                    &self.api_key_input,
-                    &self.settings.hotkey,
-                    self.recording_hotkey,
-                ));
-            }
             Mode::Skills => {
                 stack = stack.push(ui::skill_list::view(
                     &self.filtered_skills,
@@ -481,7 +609,8 @@ impl Launchpad {
 
     fn send_follow_up(&mut self, content: String) -> Task<Message> {
         let user_id = self.alloc_id();
-        self.messages.push(ChatMessageView::user(user_id, content.clone()));
+        self.messages
+            .push(ChatMessageView::user(user_id, content.clone()));
         self.input.clear();
         self.is_agent_ready = false;
         self.current_assistant_id = None;
@@ -560,7 +689,8 @@ impl Launchpad {
                 self.ensure_streaming_assistant();
                 let args = args.unwrap_or_default();
                 if let Some(msg) = self.current_assistant_mut() {
-                    msg.blocks.push(ContentBlock::ToolEnd { tool, args, result });
+                    msg.blocks
+                        .push(ContentBlock::ToolEnd { tool, args, result });
                 }
             }
             SidecarEvent::Error { error, .. } => {
@@ -626,6 +756,16 @@ impl Launchpad {
         Task::none()
     }
 
+    /// Palette launcher width. Fixed; settings has its own window.
+    const LAUNCHER_W: f32 = 720.0;
+
+    /// Debounce window for the spurious `Unfocused` event that AppKit
+    /// fires right after we open the settings window (our Accessory
+    /// activation policy means the app deactivates the moment it
+    /// activates). Blurs within this window are ignored; anything after
+    /// is a genuine user-initiated click-outside and closes settings.
+    const SETTINGS_BLUR_GRACE_MS: u64 = 300;
+
     /// Desired palette window height for the current mode + content state.
     /// Ported from the old `usePalette.ts` sizing heuristic.
     fn target_height(&self) -> f32 {
@@ -635,7 +775,10 @@ impl Launchpad {
         const CHAT: f32 = 480.0;
         match self.mode {
             Mode::Chatting => BASE + CHAT,
-            Mode::Settings => BASE + CHAT,
+            // Palette never enters Settings mode now (settings is a
+            // separate window); return BASE as a safe fallback if it ever
+            // somehow does.
+            Mode::Settings => BASE,
             Mode::Skills => {
                 let n = self.filtered_skills.len().max(1) as f32;
                 BASE + (n * ROW).min(MAX_LIST)
@@ -651,17 +794,18 @@ impl Launchpad {
         }
     }
 
-    /// Emit an `iced::window::resize` task to match the current target height,
-    /// or `Task::none()` if the window id hasn't been resolved yet.
+    /// Emit an `iced::window::resize` task to match the current target
+    /// palette size, or `Task::none()` if the palette window id hasn't
+    /// been created yet.
     fn resize_task(&self) -> Task<Message> {
-        let Some(id) = self.window_id else {
+        let Some(id) = self.palette_window_id else {
             return Task::none();
         };
-        iced::window::resize(id, iced::Size::new(720.0, self.target_height()))
+        iced::window::resize(id, iced::Size::new(Self::LAUNCHER_W, self.target_height()))
     }
 
     fn toggle_palette(&mut self) -> Task<Message> {
-        if self.visible {
+        if self.palette_visible {
             self.hide_palette()
         } else {
             self.show_palette()
@@ -669,7 +813,7 @@ impl Launchpad {
     }
 
     fn show_palette(&mut self) -> Task<Message> {
-        self.visible = true;
+        self.palette_visible = true;
         // Input is prefilled with "/", so we land directly in Skills mode —
         // the view only renders the skill list when `mode == Skills`.
         self.mode = Mode::Skills;
@@ -682,24 +826,35 @@ impl Launchpad {
         self.session_id = None;
         self.current_assistant_id = None;
 
-        #[cfg(target_os = "macos")]
-        unsafe {
-            let ptr = crate::platform::macos::first_app_window_ptr();
-            crate::platform::macos::apply_palette_style(ptr);
-            crate::platform::macos::order_front_and_make_key(ptr);
-        }
+        let Some(id) = self.palette_window_id else {
+            return Task::none();
+        };
 
-        // Position + resize + focus. Each is independent and safe to dispatch
-        // in parallel via Task::batch.
-        let mut tasks: Vec<Task<Message>> = Vec::with_capacity(3);
-        #[cfg(target_os = "macos")]
-        if let Some(id) = self.window_id {
-            if let Some((x, y)) = crate::platform::macos::cursor_palette_position(720.0) {
-                tasks.push(iced::window::move_to(
-                    id,
-                    iced::Point::new(x as f32, y as f32),
-                ));
+        // NSPanel style + orderFrontAndMakeKey on the specific palette
+        // window, via run_with_handle. This is the multi-window-safe
+        // replacement for the old `first_app_window_ptr()` guessing.
+        let style_task: Task<Message> = iced::window::run_with_handle(id, |handle| {
+            #[cfg(target_os = "macos")]
+            unsafe {
+                let ns_window = crate::platform::macos::ns_window_from_handle(&handle);
+                crate::platform::macos::apply_palette_style(ns_window);
+                crate::platform::macos::order_front_and_make_key(ns_window);
             }
+            #[cfg(not(target_os = "macos"))]
+            let _ = handle;
+        })
+        .discard();
+
+        let mut tasks: Vec<Task<Message>> = Vec::with_capacity(4);
+        tasks.push(style_task);
+        #[cfg(target_os = "macos")]
+        if let Some((x, y)) =
+            crate::platform::macos::cursor_palette_position(Self::LAUNCHER_W as f64)
+        {
+            tasks.push(iced::window::move_to(
+                id,
+                iced::Point::new(x as f32, y as f32),
+            ));
         }
         tasks.push(self.resize_task());
         tasks.push(text_input::focus(INPUT_ID.clone()));
@@ -707,14 +862,62 @@ impl Launchpad {
     }
 
     fn hide_palette(&mut self) -> Task<Message> {
-        self.visible = false;
+        self.palette_visible = false;
+        let Some(id) = self.palette_window_id else {
+            return Task::none();
+        };
+        iced::window::run_with_handle(id, |handle| {
+            #[cfg(target_os = "macos")]
+            unsafe {
+                let ns_window = crate::platform::macos::ns_window_from_handle(&handle);
+                crate::platform::macos::order_out(ns_window);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = handle;
+        })
+        .discard()
+    }
 
-        #[cfg(target_os = "macos")]
-        unsafe {
-            let ptr = crate::platform::macos::first_app_window_ptr();
-            crate::platform::macos::order_out(ptr);
+    /// Open (or toggle closed) the settings window anchored below the
+    /// tray icon. Matches the Tauri `toggle_settings_window` behavior.
+    fn open_settings_window(
+        &mut self,
+        tray_x: f64,
+        tray_y: f64,
+        tray_w: f64,
+        tray_h: f64,
+    ) -> Task<Message> {
+        // Toggle: if settings is already open, a second tray click
+        // dismisses it rather than being a no-op.
+        if let Some(id) = self.settings_window_id {
+            return iced::window::close(id);
         }
-        Task::none()
+
+        let settings_w = 340.0_f64;
+        let x = (tray_x + tray_w / 2.0 - settings_w / 2.0) as f32;
+        let y = (tray_y + tray_h + 4.0) as f32;
+
+        let (settings_id, open_task) = iced::window::open(ui::theme::settings_window_settings(x, y));
+        self.settings_window_id = Some(settings_id);
+        // Stamp the open time so the blur handler can ignore the
+        // activation-flicker Unfocused that AppKit fires in the next
+        // few milliseconds.
+        self.settings_opened_at = Some(std::time::Instant::now());
+
+        // No class swap! winit's own `WinitWindow` class already
+        // overrides `canBecomeKeyWindow` to return `true`, so the
+        // settings window is key-eligible out of the box. Swapping
+        // the class to `LaunchpadPanel` was crashing iced's close
+        // path — its internal cleanup tries to reach methods that
+        // live on `WinitWindow`'s class, and the swap hides them.
+        //
+        // `gain_focus` explicitly calls `makeKeyAndOrderFront` on
+        // the new window, which makes it key, which in turn enables
+        // the `Unfocused` (blur-close) path when the user clicks
+        // outside.
+        open_task
+            .discard::<Message>()
+            .chain(iced::window::gain_focus::<Message>(settings_id))
     }
 }
 
@@ -732,6 +935,19 @@ fn external_subscription_stream() -> impl Stream<Item = Message> {
                 External::Sidecar(ev) => Message::SidecarEvent(ev),
                 External::RecentSessions(s) => Message::RecentSessionsLoaded(s),
                 External::HistoryLoaded(m) => Message::HistoryLoaded(m),
+                External::TrayClicked {
+                    tray_x,
+                    tray_y,
+                    tray_w,
+                    tray_h,
+                } => Message::TrayOpenSettings {
+                    tray_x,
+                    tray_y,
+                    tray_w,
+                    tray_h,
+                },
+                External::TrayMenuShow => Message::HotkeyPressed,
+                External::TrayMenuQuit => Message::QuitRequested,
             };
             if output.send(msg).await.is_err() {
                 break;

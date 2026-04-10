@@ -33,10 +33,25 @@ fn main() -> iced::Result {
     #[cfg(target_os = "macos")]
     platform::macos::set_accessory_activation_policy();
 
-    iced::application(Launchpad::title, Launchpad::update, Launchpad::view)
+    // Initialize the external event bus BEFORE iced::application — both
+    // `Launchpad::new()`'s hotkey forwarder and the tray handlers push
+    // events through it, and the iced subscription drains it.
+    app::init_external_bus();
+
+    // Note: tray::init() is deliberately NOT called here. tray-icon's macOS
+    // docs require the NSApplication event loop to be running before the
+    // NSStatusItem is created, and calling it before `run_with` leaves the
+    // tray in a state where click events don't dispatch. See the dispatch
+    // hook in `Launchpad::new()` that creates the tray once iced's run loop
+    // starts draining the main dispatch queue.
+
+    // Multi-window daemon: the launcher palette and the tray-anchored
+    // settings window are each their own iced window. `iced::daemon` starts
+    // with no windows; `Launchpad::new()` returns a task that opens the
+    // palette via `iced::window::open(...)`.
+    iced::daemon(Launchpad::title, Launchpad::update, Launchpad::view)
         .subscription(Launchpad::subscription)
         .theme(Launchpad::theme)
-        .window(ui::theme::palette_window_settings())
         .antialiasing(true)
         .run_with(Launchpad::new)
 }
