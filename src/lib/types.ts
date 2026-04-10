@@ -35,6 +35,9 @@ export interface SessionInfo {
   summary: string;
   lastModified: number;
   firstPrompt?: string;
+  isRunning?: boolean;
+  /** Opaque ref to a managed session — used internally by resumeSession. */
+  _managed?: unknown;
 }
 
 export type PaletteMode = "idle" | "skills" | "chatting";

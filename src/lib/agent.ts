@@ -59,6 +59,11 @@ export class ChatSession {
     this._onEvent = onEvent;
   }
 
+  /** Whether the sidecar process is still alive. */
+  get isAlive(): boolean {
+    return this.child !== null && !this._killed;
+  }
+
   /** @internal — called by startChatSession */
   async _start(payload: Record<string, unknown>, runnerPath: string): Promise<void> {
     const base64Payload = btoa(Array.from(new TextEncoder().encode(JSON.stringify(payload)), (b) => String.fromCharCode(b)).join(""));

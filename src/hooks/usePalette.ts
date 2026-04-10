@@ -11,6 +11,7 @@ import {
   ChatSession,
   SYSTEM_PROMPT,
 } from "../lib/agent";
+import { sessionManager } from "../lib/sessionManager";
 
 const INPUT_HEIGHT = 90;
 const MAX_RESULTS_HEIGHT = 480;
@@ -33,7 +34,10 @@ export function usePalette() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const chatSessionRef = useRef<ChatSession | null>(null);
   const currentAssistantIdRef = useRef<string | null>(null);
-  const generationRef = useRef(0);
+
+  // Ref for stale-closure-safe message access
+  const messagesRef = useRef<ChatMessage[]>([]);
+  messagesRef.current = messages;
 
   // Session list
   const [recentSessions, setRecentSessions] = useState<SessionInfo[]>([]);
@@ -60,11 +64,170 @@ export function usePalette() {
     });
   }, []);
 
-  // Load recent sessions
+  /**
+   * Process an event into React state. Called by self-routing handlers
+   * when the session is active (displayed in the UI).
+   */
+  const processReactEvent = useCallback((event: ToolEvent) => {
+    if (event.type === "session_id" && event.sessionId) {
+      setSessionId(event.sessionId);
+      // Also update the session manager's record
+      if (chatSessionRef.current) {
+        const state = sessionManager.getState(chatSessionRef.current);
+        if (state) state.sessionId = event.sessionId;
+      }
+      return;
+    }
+
+    if (event.type === "ready") {
+      setIsAgentReady(true);
+      return;
+    }
+
+    if (event.type === "text_delta" || event.type === "tool_start" || event.type === "tool_end") {
+      setMessages((prev) => {
+        const lastMsg = prev[prev.length - 1];
+        if (!lastMsg || lastMsg.role !== "assistant" || lastMsg.status !== "streaming") {
+          const newId = nextMsgId();
+          currentAssistantIdRef.current = newId;
+          return [
+            ...prev,
+            {
+              id: newId,
+              role: "assistant" as const,
+              content: "",
+              toolEvents: [],
+              blocks: [],
+              timestamp: Date.now(),
+              status: "streaming" as const,
+            },
+          ];
+        }
+        return prev;
+      });
+    }
+
+    if (event.type === "text_delta" && event.delta) {
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== currentAssistantIdRef.current) return m;
+          const lastBlock = m.blocks[m.blocks.length - 1];
+          const updatedBlocks =
+            lastBlock && lastBlock.type === "text"
+              ? [...m.blocks.slice(0, -1), { type: "text" as const, content: lastBlock.content + event.delta }]
+              : [...m.blocks, { type: "text" as const, content: event.delta! }];
+          return { ...m, content: m.content + event.delta, blocks: updatedBlocks };
+        })
+      );
+    }
+
+    if ((event.type === "tool_start" || event.type === "tool_end") && event.tool) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === currentAssistantIdRef.current
+            ? { ...m, toolEvents: [...m.toolEvents, event], blocks: [...m.blocks, event] }
+            : m
+        )
+      );
+    }
+
+    if (event.type === "error") {
+      const errorContent = event.error || "An error occurred";
+      setMessages((prev) => {
+        const hasAssistant =
+          currentAssistantIdRef.current != null &&
+          prev.some((m) => m.id === currentAssistantIdRef.current);
+        if (hasAssistant) {
+          return prev.map((m) =>
+            m.id === currentAssistantIdRef.current
+              ? { ...m, status: "error" as const, content: m.content || errorContent }
+              : m
+          );
+        }
+        const newId = nextMsgId();
+        currentAssistantIdRef.current = newId;
+        return [
+          ...prev,
+          {
+            id: newId,
+            role: "assistant" as const,
+            content: errorContent,
+            toolEvents: [],
+            blocks: [{ type: "text" as const, content: errorContent }],
+            timestamp: Date.now(),
+            status: "error" as const,
+          },
+        ];
+      });
+    }
+
+    if (event.type === "complete") {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === currentAssistantIdRef.current ? { ...m, status: "complete" as const } : m
+        )
+      );
+      currentAssistantIdRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Create a self-routing event handler for a chat session.
+   * The handler checks sessionManager.activeSession at dispatch time:
+   *   - If active → processReactEvent (updates UI)
+   *   - If not active → sessionManager.bufferEvent (stores for later)
+   *
+   * The `sessSlot` pattern handles the async gap: the handler is passed
+   * to the ChatSession constructor before `await` resolves, so we use a
+   * mutable local that's set immediately after. JS is single-threaded,
+   * so no events can arrive in that gap.
+   */
+  const createSessionHandler = useCallback(
+    (sessSlot: { current: ChatSession | null }) => {
+      return (event: ToolEvent) => {
+        const sess = sessSlot.current;
+        if (!sess) return;
+        if (sessionManager.activeSession === sess) {
+          processReactEvent(event);
+        } else {
+          sessionManager.bufferEvent(sess, event);
+        }
+      };
+    },
+    [processReactEvent]
+  );
+
+  // Load recent sessions, merging in any managed sessions
   const refreshSessions = useCallback(async () => {
     try {
-      const sessions = await listRecentSessions();
-      setRecentSessions(sessions);
+      const diskSessions = await listRecentSessions();
+      const managed = sessionManager.getAll();
+      const runningIds = sessionManager.getRunningIds();
+      const seen = new Set<string>();
+      const merged: SessionInfo[] = [];
+
+      // Managed sessions with known sessionId go first
+      for (const { session, state } of managed) {
+        if (state.sessionId) {
+          seen.add(state.sessionId);
+          merged.push({
+            sessionId: state.sessionId,
+            summary: state.summary,
+            lastModified: Date.now(),
+            firstPrompt: state.summary,
+            isRunning: session.isAlive,
+            _managed: session,
+          });
+        }
+      }
+      // Disk sessions (the alive-fallback in resumeSession handles matching
+      // for managed sessions whose sessionId hasn't arrived yet)
+      for (const ds of diskSessions) {
+        if (!seen.has(ds.sessionId)) {
+          merged.push({ ...ds, isRunning: runningIds.has(ds.sessionId) });
+        }
+      }
+      setRecentSessions(merged);
     } catch {
       setRecentSessions([]);
     }
@@ -74,25 +237,26 @@ export function usePalette() {
     refreshSessions();
   }, [refreshSessions]);
 
-  // Kill active session helper
+  // Kill active session
   const killSession = useCallback(async () => {
-    if (chatSessionRef.current) {
-      await chatSessionRef.current.kill();
+    const session = chatSessionRef.current;
+    if (session) {
+      sessionManager.remove(session);
+      await session.kill();
       chatSessionRef.current = null;
     }
-    generationRef.current++;
   }, []);
 
-  // Detach from session without killing it — sidecar keeps running in background
+  // Deactivate current session — snapshot messages, flip activeSession to null.
+  // Safe to call any number of times, at any point.
   const detachSession = useCallback(() => {
+    sessionManager.deactivate([...messagesRef.current]);
     chatSessionRef.current = null;
-    generationRef.current++;
   }, []);
 
   // Listen for palette show/hide events from Rust
   useEffect(() => {
     const unlisten = listen("palette-shown", () => {
-      // Detach from any active session (keeps running in bg) and reset UI
       detachSession();
       setInput("/");
       setMode("skills");
@@ -111,7 +275,14 @@ export function usePalette() {
     };
   }, [detachSession, refreshSessions, skills]);
 
-  // Refocus input when agent becomes ready (disabled input drops focus)
+  // Kill all sessions on app quit
+  useEffect(() => {
+    const cleanup = () => sessionManager.killAll();
+    window.addEventListener("beforeunload", cleanup);
+    return () => window.removeEventListener("beforeunload", cleanup);
+  }, []);
+
+  // Refocus input when agent becomes ready
   useEffect(() => {
     if (isAgentReady && mode === "chatting") {
       inputRef.current?.focus();
@@ -132,10 +303,9 @@ export function usePalette() {
     invoke("resize_palette", { height });
   }, [mode, filteredSkills.length, skills.length, recentSessions.length, input, messages.length]);
 
-  // Filter skills as user types (only when not in chatting mode)
+  // Filter skills as user types
   useEffect(() => {
     if (mode === "chatting") return;
-
     if (input.startsWith("/")) {
       const query = input.slice(1);
       if (query.length === 0) {
@@ -156,110 +326,6 @@ export function usePalette() {
     invoke("hide_palette");
   }, []);
 
-  // Shared event handler for chat sessions
-  const makeOnEvent = useCallback(() => {
-    const gen = generationRef.current;
-    return (event: ToolEvent) => {
-      // Ignore events from detached sessions
-      if (gen !== generationRef.current) return;
-      if (event.type === "session_id" && event.sessionId) {
-        setSessionId(event.sessionId);
-        return;
-      }
-
-      if (event.type === "ready") {
-        setIsAgentReady(true);
-        return;
-      }
-
-      if (event.type === "text_delta" || event.type === "tool_start" || event.type === "tool_end") {
-        // Ensure an assistant message exists for this turn
-        setMessages((prev) => {
-          const lastMsg = prev[prev.length - 1];
-          if (!lastMsg || lastMsg.role !== "assistant" || lastMsg.status !== "streaming") {
-            const newId = nextMsgId();
-            currentAssistantIdRef.current = newId;
-            const newMsg: ChatMessage = {
-              id: newId,
-              role: "assistant",
-              content: "",
-              toolEvents: [],
-              blocks: [],
-              timestamp: Date.now(),
-              status: "streaming",
-            };
-            return [...prev, newMsg];
-          }
-          return prev;
-        });
-      }
-
-      if (event.type === "text_delta" && event.delta) {
-        setMessages((prev) =>
-          prev.map((m) => {
-            if (m.id !== currentAssistantIdRef.current) return m;
-            const lastBlock = m.blocks[m.blocks.length - 1];
-            const updatedBlocks = lastBlock && lastBlock.type === "text"
-              ? [...m.blocks.slice(0, -1), { type: "text" as const, content: lastBlock.content + event.delta }]
-              : [...m.blocks, { type: "text" as const, content: event.delta! }];
-            return { ...m, content: m.content + event.delta, blocks: updatedBlocks };
-          })
-        );
-      }
-
-      if ((event.type === "tool_start" || event.type === "tool_end") && event.tool) {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === currentAssistantIdRef.current
-              ? { ...m, toolEvents: [...m.toolEvents, event], blocks: [...m.blocks, event] }
-              : m
-          )
-        );
-      }
-
-      if (event.type === "error") {
-        const errorContent = event.error || "An error occurred";
-        setMessages((prev) => {
-          const hasAssistant = currentAssistantIdRef.current != null &&
-            prev.some((m) => m.id === currentAssistantIdRef.current);
-          if (hasAssistant) {
-            return prev.map((m) =>
-              m.id === currentAssistantIdRef.current
-                ? { ...m, status: "error" as const, content: m.content || errorContent }
-                : m
-            );
-          }
-          const newId = nextMsgId();
-          currentAssistantIdRef.current = newId;
-          return [
-            ...prev,
-            {
-              id: newId,
-              role: "assistant" as const,
-              content: errorContent,
-              toolEvents: [],
-              blocks: [{ type: "text" as const, content: errorContent }],
-              timestamp: Date.now(),
-              status: "error" as const,
-            },
-          ];
-        });
-      }
-
-      if (event.type === "complete") {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === currentAssistantIdRef.current
-              ? { ...m, status: "complete" as const }
-              : m
-          )
-        );
-        // Reset for next turn
-        currentAssistantIdRef.current = null;
-      }
-    };
-  }, []);
-
   // Start a new chat session
   const startChat = useCallback(
     async (prompt: string, skill?: Skill) => {
@@ -270,7 +336,6 @@ export function usePalette() {
       setSessionId(null);
       currentAssistantIdRef.current = null;
 
-      // Add user message
       const userMsg: ChatMessage = {
         id: nextMsgId(),
         role: "user",
@@ -283,42 +348,84 @@ export function usePalette() {
       setMessages([userMsg]);
       setInput("");
 
-      const onEvent = makeOnEvent();
+      // Mutable slot — set after await so the handler can reference the session
+      const sessSlot = { current: null as ChatSession | null };
+      const handler = createSessionHandler(sessSlot);
 
       try {
-        const session = await startChatSession(
-          prompt,
-          SYSTEM_PROMPT,
-          onEvent
-        );
+        const session = await startChatSession(prompt, SYSTEM_PROMPT, handler);
+        sessSlot.current = session;
+        sessionManager.register(session, [userMsg], prompt);
+        sessionManager.activate(session);
         chatSessionRef.current = session;
       } catch (e: any) {
-        onEvent({ type: "error", error: e?.message || String(e), timestamp: Date.now() });
-        onEvent({ type: "ready", timestamp: Date.now() });
+        processReactEvent({ type: "error", error: e?.message || String(e), timestamp: Date.now() });
+        processReactEvent({ type: "ready", timestamp: Date.now() });
       }
     },
-    [detachSession, makeOnEvent]
+    [detachSession, createSessionHandler, processReactEvent]
   );
 
   // Resume a past session
   const resumeSession = useCallback(
     async (info: SessionInfo) => {
-      await killSession();
+      // Find the managed session. Three strategies (in priority order):
+      // 1. _managed ref attached during refreshSessions
+      // 2. sessionId lookup in the manager
+      // 3. Any alive managed session (handles the case where session_id
+      //    event hasn't arrived yet — it's emitted AFTER tool events)
+      let session: ChatSession | undefined;
+      let state = undefined as ReturnType<typeof sessionManager.getState>;
 
-      setMode("chatting");
-      setIsAgentReady(true); // Ready for input — sidecar not spawned yet
-      setSessionId(info.sessionId);
-      setInput("");
-      currentAssistantIdRef.current = null;
+      const managed = info._managed as ChatSession | undefined;
+      if (managed) {
+        state = sessionManager.getState(managed);
+        if (state) session = managed;
+      }
+      if (!state) {
+        const bg = sessionManager.getBySessionId(info.sessionId);
+        if (bg) { session = bg.session; state = bg.state; }
+      }
+      if (!state) {
+        const all = sessionManager.getAll();
+        const alive = all.find(({ session: s }) => s.isAlive);
+        if (alive) { session = alive.session; state = alive.state; }
+      }
 
-      try {
-        const loaded = await loadSessionMessages(info.sessionId);
-        setMessages(loaded);
-      } catch {
-        setMessages([]);
+      if (session && state) {
+        detachSession();
+        chatSessionRef.current = session;
+        sessionManager.activate(session);
+
+        setMode("chatting");
+        setSessionId(info.sessionId);
+        setMessages(
+          state.messages.map((m) => ({
+            ...m,
+            toolEvents: [...m.toolEvents],
+            blocks: m.blocks.map((b) => (b.type === "text" ? { ...b } : { ...b })),
+          }))
+        );
+        currentAssistantIdRef.current = state.currentAssistantId;
+        setIsAgentReady(state.status !== "running");
+        setInput("");
+      } else {
+        // No managed session — load from disk
+        detachSession();
+        setMode("chatting");
+        setIsAgentReady(true);
+        setSessionId(info.sessionId);
+        setInput("");
+        currentAssistantIdRef.current = null;
+        try {
+          const loaded = await loadSessionMessages(info.sessionId);
+          setMessages(loaded);
+        } catch {
+          setMessages([]);
+        }
       }
     },
-    [killSession]
+    [detachSession]
   );
 
   // Send a follow-up in active session
@@ -340,33 +447,30 @@ export function usePalette() {
       setIsAgentReady(false);
       currentAssistantIdRef.current = null;
 
-      // If we have a live session, send via stdin
       if (chatSessionRef.current) {
         try {
           await chatSessionRef.current.sendMessage(content.trim());
         } catch (e: any) {
-          const onEvent = makeOnEvent();
-          onEvent({ type: "error", error: e?.message || String(e), timestamp: Date.now() });
-          onEvent({ type: "ready", timestamp: Date.now() });
+          processReactEvent({ type: "error", error: e?.message || String(e), timestamp: Date.now() });
+          processReactEvent({ type: "ready", timestamp: Date.now() });
         }
       } else if (sessionId) {
-        // Resumed session — need to spawn sidecar with resume
-        const onEvent = makeOnEvent();
+        // Resumed session with dead sidecar — spawn new one
+        const sessSlot = { current: null as ChatSession | null };
+        const handler = createSessionHandler(sessSlot);
         try {
-          const session = await startChatSession(
-            content.trim(),
-            SYSTEM_PROMPT,
-            onEvent,
-            sessionId
-          );
+          const session = await startChatSession(content.trim(), SYSTEM_PROMPT, handler, sessionId);
+          sessSlot.current = session;
+          sessionManager.register(session, [...messagesRef.current], content.trim());
+          sessionManager.activate(session);
           chatSessionRef.current = session;
         } catch (e: any) {
-          onEvent({ type: "error", error: e?.message || String(e), timestamp: Date.now() });
-          onEvent({ type: "ready", timestamp: Date.now() });
+          processReactEvent({ type: "error", error: e?.message || String(e), timestamp: Date.now() });
+          processReactEvent({ type: "ready", timestamp: Date.now() });
         }
       }
     },
-    [sessionId, makeOnEvent]
+    [sessionId, createSessionHandler, processReactEvent]
   );
 
   const handleSubmit = useCallback(() => {
@@ -378,7 +482,6 @@ export function usePalette() {
         startChat(`/${skill.name}`, skill);
       }
     } else if (mode === "idle" && !input && recentSessions.length > 0) {
-      // Select a session from the list
       const session = recentSessions[selectedSessionIndex];
       if (session) {
         resumeSession(session);
@@ -431,7 +534,6 @@ export function usePalette() {
   );
 
   const copyResult = useCallback(() => {
-    // Copy the last assistant message
     const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
     if (lastAssistant) {
       navigator.clipboard.writeText(lastAssistant.content);

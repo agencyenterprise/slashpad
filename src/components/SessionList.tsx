@@ -31,7 +31,10 @@ export function SessionList({ sessions, selectedIndex, onSelect }: Props) {
             ${i === selectedIndex ? "bg-surface-2" : "hover:bg-surface-2/50"}`}
         >
           <span className="w-4 h-4 flex items-center justify-center flex-shrink-0">
-            <span className={`w-1.5 h-1.5 rounded-full ${i === selectedIndex ? "bg-accent" : "bg-muted/40"}`} />
+            <span className={`w-1.5 h-1.5 rounded-full ${
+              session.isRunning ? "bg-accent animate-pulse-subtle"
+              : i === selectedIndex ? "bg-accent" : "bg-muted/40"
+            }`} />
           </span>
           <span className="flex-1 min-w-0">
             <span className="text-[13px] font-mono text-white/80 truncate block">
@@ -39,7 +42,9 @@ export function SessionList({ sessions, selectedIndex, onSelect }: Props) {
             </span>
           </span>
           <span className="text-[11px] font-mono text-muted flex-shrink-0">
-            {timeAgo(session.lastModified)}
+            {session.isRunning
+              ? <span className="text-accent">running</span>
+              : timeAgo(session.lastModified)}
           </span>
         </button>
       ))}
