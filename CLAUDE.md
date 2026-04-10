@@ -2,62 +2,98 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **If this is a fresh session continuing the Rust rewrite, read `HANDOFF.md` at the repo root first.** It lists what's verified, what's untested, the known gaps, and the manual smoke test. This file covers architecture; `HANDOFF.md` covers status.
+
 ## What This Is
 
-Launchpad is a desktop AI command palette (think Raycast) built with **Tauri v2** (Rust backend + React/TypeScript frontend). Users press **Ctrl+Space** to summon a floating palette, type a command or natural language prompt, and Claude executes it with tool access.
+Launchpad is a desktop AI command palette (think Raycast) built as a **native Rust binary** using **iced** (GUI) + a **Node.js sidecar** that wraps the Claude Agent SDK. Users press **Ctrl+Space** to summon a floating palette, type a command or natural language prompt, and Claude executes it with tool access.
+
+There is **no webview** and **no React/TypeScript**. The previous Tauri + React implementation was rewritten to be pure Rust — everything except the sidecar.
 
 ## Commands
 
 ```bash
-npm install              # Install frontend dependencies
-npm run tauri dev        # Development mode (hot-reload, Vite on :1420)
-npm run tauri build      # Production build (creates native app bundle)
+npm install              # Install sidecar's Node dependencies (@anthropic-ai/claude-agent-sdk)
+cargo run                # Development build + run
+cargo build --release    # Optimized release binary at target/release/launchpad
+cargo check              # Fast type-check feedback loop
 ```
 
-There are no tests or linting configured.
+There are no automated tests.
 
 ## Architecture
 
-**Three runtimes:**
-- **Rust** (`src-tauri/src/lib.rs`): Window management, global hotkey (`Ctrl+Space`), multi-monitor cursor detection, palette toggle/resize, launchpad directory creation, project dir resolution. Tauri commands: `hide_palette`, `resize_palette`, `get_launchpad_dir`, `get_project_dir`.
-- **TypeScript/React** (`src/`): UI and state management run in the Tauri webview.
-- **Node.js sidecar** (`agent/runner.mjs`): Runs the Claude Agent SDK in a spawned process. Communicates with the webview via JSONL on stdout.
+**Two runtimes:**
+- **Rust binary** (`src/`): UI (iced + winit + wgpu), state machine, window management, global hotkey, NSPanel wrapping, sidecar process management.
+- **Node.js sidecar** (`agent/runner.mjs`): Runs `@anthropic-ai/claude-agent-sdk` in a spawned child process. Communicates with the Rust side via JSONL on stdin/stdout. **Unchanged from the pre-rewrite version.**
 
-**Agent architecture** (`src/lib/agent.ts` + `agent/runner.mjs`):
-- `agent.ts` exposes a `ChatSession` class that manages a long-lived Node.js sidecar process for multi-turn conversations
-- The sidecar runs `@anthropic-ai/claude-agent-sdk` with built-in tools: Read, Write, Bash, Glob, Grep, Skill
-- `runner.mjs` supports three modes: `"chat"` (new/resumed session), `"list"` (list recent sessions), `"messages"` (load past session messages)
-- Session persistence & resumption via Claude Agent SDK's built-in store; sessions tagged with "launchpad"
-- Auth uses existing Claude CLI login (no API key needed). Optional API key override via localStorage.
-- Events stream as JSONL on stdout, mapped to event types for the UI
-- `get_project_dir` Rust command resolves CWD; `agent.ts` strips `src-tauri/` suffix to find project root
+**Module layout** (`src/`):
+- `main.rs` — entry point. Builds a tokio runtime, enters it, seeds bundled skills, sets macOS activation policy, starts iced.
+- `app.rs` — iced `Application` impl. Central state machine ported from the old `usePalette.ts`. Owns the external event bus (hotkey + sidecar events funneled into iced via `Subscription::run`).
+- `state.rs` — `Mode` (Idle/Skills/Chatting/Settings), `ChatMessageView`, `ContentBlock`, `Skill`, `SessionInfo`.
+- `hotkey.rs` — `global-hotkey` registration. Runs a blocking thread that forwards presses into an `UnboundedSender`. Has a `parse_hotkey` function matching the old `HotkeyRecorder.tsx` string format.
+- `settings.rs` — `~/.launchpad/settings.json` (serde_json-backed).
+- `skills.rs` — SKILL.md loader (walks `~/.launchpad/.claude/skills`, parses frontmatter with `serde_yaml`). Also seeds `skill-creator` via `include_dir!("bundled-skills/skill-creator")`.
+- `sessions.rs` — One-shot sidecar runs in `list`/`messages` mode to fetch recent sessions and past session messages.
+- `fuzzy.rs` — `nucleo-matcher` wrapper replacing Fuse.js.
+- `markdown.rs` — `pulldown-cmark` → flat text. (Rich widget rendering is future work.)
+- `sidecar/` — `events.rs` (serde types for runner.mjs JSONL events), `payload.rs` (base64 payload for argv[2]), `process.rs` (`tokio::process::Command` + stdin/stdout pumps), `mod.rs` (public `spawn`/`SpawnedSidecar`/`FollowUp`).
+- `platform/macos.rs` — NSPanel wrapping via `objc2` + `objc2-app-kit`: activation policy, style mask, window level, collection behavior, `dispatch_async_f` main-thread hop.
+- `ui/` — iced widgets: `theme.rs`, `command_input.rs`, `skill_list.rs`, `session_list.rs`, `chat_panel.rs`, `tool_line.rs`, `settings.rs`.
 
-**State management** (`src/hooks/usePalette.ts`):
-- Single custom hook manages all palette state (input, mode, skills, events, results)
-- Fuse.js for fuzzy skill search (threshold 0.4)
-- Modes: `idle` (shows recent sessions) -> `skills` (when input starts with `/`) -> `chatting` (active conversation)
-- Session resumption: idle mode loads recent sessions for quick resume
-- Window dynamically resizes via Rust `resize_palette` command based on mode
+## State machine (ported from usePalette.ts)
 
-**Skills system** (`src/lib/skills.ts`):
-- SKILL.md files with YAML frontmatter stored in `~/.launchpad/.claude/skills/`
-- Loaded via Tauri FS plugin, parsed with js-yaml
-- Only `skill-creator` is bundled and seeded on first run (from `src-tauri/bundled-skills/`)
-- Skills can be created via prompt ("create a skill...") using the bundled skill-creator
+Modes: `Idle` → `Skills` (when input starts with `/`) → `Chatting` (after submit) → `Settings` (when input is exactly `/settings`). Port of the original React state machine.
 
-**Window behavior** (configured in `src-tauri/tauri.conf.json`):
-- 720x90 frameless, transparent, always-on-top, hidden by default, skip taskbar
-- macOS private API enabled for advanced window management
+**Key message flows:**
+- Hotkey thread → `External::HotkeyPressed` → iced subscription → `Message::HotkeyPressed` → `toggle_palette()`.
+- User types → `text_input.on_input` → `Message::InputChanged` → filter skills via `fuzzy::filter_skills`.
+- User presses Enter in input → `text_input.on_submit` → `Message::Submit` → spawns sidecar via `spawn_sidecar_chat`.
+- Sidecar stdout JSONL → tokio reader task → `External::Sidecar(event)` → iced subscription → `Message::SidecarEvent` → `process_sidecar_event()` which mutates `self.messages`.
+- Esc key → `iced::keyboard::on_key_press` subscription → `Message::EscapePressed` → mode-dependent dismiss/back.
+- Window blur → `iced::event::listen_with` subscription → `Message::PaletteBlurred` → hide unless mid-chat.
 
-## macOS Threading Rule
+## macOS threading rule
 
-**All NSPanel/window UI operations (show, hide, setLevel, etc.) MUST run on the main thread.** Tauri `async fn` commands run on a thread pool and will crash. Use `fn` (not `async fn`) for Tauri commands that touch windows, and wrap `app.listen` callbacks in `run_on_main_thread` if they call panel/window methods.
+**All NSPanel/NSWindow ops MUST run on the main thread.** iced's event loop runs on the main thread, so Message handlers are safe. But background tasks (tokio::spawn, std::thread::spawn) that need to touch windows must hop to the main thread via `platform::macos::dispatch_main_async(|| { ... })`, which wraps `dispatch_async_f(_dispatch_main_q, ...)`.
 
-## Key Patterns
+The 200ms post-launch NSPanel wrapping hook in `Launchpad::new()` uses `std::thread::spawn` + `dispatch_main_async` to safely apply the style mask once winit has finished creating the window.
 
-- Path alias: `@/*` maps to `src/*`
-- Styling: Tailwind CSS with custom dark theme (surface-0/1/2/3 colors, accent `#c4a1ff`)
-- Animations: Framer Motion (fadeIn, slideDown, pulseSubtle keyframes)
-- Fonts: Berkeley Mono, JetBrains Mono, Inter
-- Components are flat (App.tsx -> CommandInput, ChatPanel, ToolLine, SkillList, SessionList, Settings), props-only, no context providers
-- Agent sidecar is spawned via `Command.create("node-agent", [runnerPath, base64Payload])` — the `node-agent` scope maps to `node` in Tauri capabilities
+## Sidecar IPC schema
+
+The sidecar is spawned as `node agent/runner.mjs <base64-payload>`. The payload is a base64-encoded JSON blob with one of three shapes:
+
+- **chat**: `{ mode: "chat", prompt, systemPrompt, apiKey?, cwd, resume? }` — long-lived; reads stdin for follow-up `{"type":"message","content":"..."}` or `{"type":"close"}` lines.
+- **list**: `{ mode: "list", cwd }` — one-shot; emits `{ type: "session", sessionId, summary, lastModified, firstPrompt }` per session then `complete`.
+- **messages**: `{ mode: "messages", sessionId, cwd }` — one-shot; emits `{ type: "chat_message", role, content, toolEvents }` per message.
+
+Chat mode emits (one JSON per line on stdout):
+- `text_delta { delta }` — streaming text chunk
+- `tool_start { tool, args }` / `tool_end { tool, args, result? }`
+- `session_id { sessionId }` — emitted once after first response
+- `error { error }` / `complete` / `ready`
+
+See `src/sidecar/events.rs` for the canonical serde enum.
+
+## Window behavior
+
+Initial iced window: 720x90, frameless, transparent, always-on-top, `visible: false`. On startup the post-launch hook applies:
+- `NSWindowStyleMask::NonactivatingPanel` (bit 7)
+- `NSModalPanelWindowLevel` (8)
+- Collection behavior: `canJoinAllSpaces | ignoresCycle | fullScreenAuxiliary`
+- Transparent background, no shadow
+
+`show_palette()` / `hide_palette()` call `orderFrontRegardless` / `orderOut` on the raw NSWindow pointer.
+
+## Theme
+
+Dark theme defined in `src/ui/theme.rs`. Colors ported 1:1 from the old Tailwind config:
+- `SURFACE_0 #0b0b0d`, `SURFACE_1 #161618`, `SURFACE_2 #1f1f23`, `SURFACE_3 #2a2a30`
+- `ACCENT #c4a1ff`, `TEXT #f0f0f5`, `MUTED`, `DANGER`, `SUCCESS`
+
+## Things to avoid
+
+- Running NSPanel/NSWindow ops from background threads without `dispatch_main_async`.
+- Calling `take()` on `EXTERNAL_RX` outside the subscription stream (it's single-use).
+- Modifying `agent/runner.mjs` — it's the pre-rewrite sidecar and the only supported bridge to the Claude Agent SDK.
+- Deleting `bundled-skills/skill-creator/` — the `include_dir!` macro in `src/skills.rs` requires it at compile time.

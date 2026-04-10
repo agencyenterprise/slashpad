@@ -10,7 +10,7 @@ if [ "$STOP_HOOK_ACTIVE" = "true" ]; then
   exit 0
 fi
 
-OUTPUT=$(cargo clippy --manifest-path "$CLAUDE_PROJECT_DIR/src-tauri/Cargo.toml" --all-targets --all-features -- -D warnings 2>&1)
+OUTPUT=$(cargo clippy --manifest-path "$CLAUDE_PROJECT_DIR/Cargo.toml" --all-targets --all-features -- -D warnings 2>&1)
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -ne 0 ]; then

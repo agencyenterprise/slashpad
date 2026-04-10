@@ -2,7 +2,7 @@
 # PostToolUse hook: fast compilation check after Rust file edits
 # Fires only for .rs files (filtered by the "if" field in settings.json)
 
-OUTPUT=$(cargo check --manifest-path "$CLAUDE_PROJECT_DIR/src-tauri/Cargo.toml" --message-format=short 2>&1)
+OUTPUT=$(cargo check --manifest-path "$CLAUDE_PROJECT_DIR/Cargo.toml" --message-format=short 2>&1)
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -ne 0 ]; then
