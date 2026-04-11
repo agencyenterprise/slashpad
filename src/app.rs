@@ -278,6 +278,17 @@ impl Launchpad {
         ui::theme::dark_theme()
     }
 
+    /// Root `Appearance` for the iced daemon. Overrides the default
+    /// (which clears to `palette.background.base.color` — our SURFACE_0)
+    /// with a fully transparent clear so the rounded inner containers
+    /// are the only thing drawn onto the transparent NSWindow.
+    pub fn style(&self, _theme: &Theme) -> iced::daemon::Appearance {
+        iced::daemon::Appearance {
+            background_color: iced::Color::TRANSPARENT,
+            text_color: ui::theme::TEXT,
+        }
+    }
+
     pub fn subscription(&self) -> Subscription<Message> {
         use iced::keyboard::key::Named;
         use iced::keyboard::Key;

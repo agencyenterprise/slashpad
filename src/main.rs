@@ -52,6 +52,7 @@ fn main() -> iced::Result {
     iced::daemon(Launchpad::title, Launchpad::update, Launchpad::view)
         .subscription(Launchpad::subscription)
         .theme(Launchpad::theme)
+        .style(Launchpad::style)
         .antialiasing(true)
         .run_with(Launchpad::new)
 }
