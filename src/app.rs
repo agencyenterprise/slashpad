@@ -11,6 +11,7 @@
 //!   Save or Quit. Each open creates a fresh window id; the close_events
 //!   subscription drains the cleanup.
 
+use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
 use iced::futures::{SinkExt, Stream};
@@ -22,19 +23,53 @@ use crate::hotkey;
 use crate::settings::AppSettings;
 use crate::sidecar::{self, FollowUp, Payload, SidecarEvent, SpawnedSidecar};
 use crate::skills;
-use crate::state::{ChatMessageView, ContentBlock, MessageStatus, Mode, Role, SessionInfo, Skill};
+use crate::state::{
+    ChatId, ChatMessageView, ChatState, ChatStatus, Mode, SessionInfo, Skill,
+};
 use crate::ui;
+
+/// A single running (or resumed) chat: its logical state plus, if the
+/// sidecar is alive, the process handle. `sidecar` is `None` for a chat
+/// that was just resumed-from-disk and hasn't had a follow-up sent yet.
+pub struct ChatEntry {
+    pub state: ChatState,
+    pub sidecar: Option<SpawnedSidecar>,
+}
+
+/// Unified idle-list selection row used by `handle_submit` and nav.
+/// The view layer has its own ref-based `IdleRow` in `ui/idle_list.rs`;
+/// this owns its data so it can round-trip through `&mut self`.
+#[derive(Debug, Clone)]
+enum IdleRowSelection {
+    Active(ChatId),
+    Past(SessionInfo),
+}
 
 /// External events that are produced off the iced thread (hotkey thread, sidecar
 /// tasks) and need to be pumped into the iced event loop via a subscription.
 #[derive(Debug)]
 pub enum External {
     HotkeyPressed,
-    Sidecar(SidecarEvent),
+    Sidecar {
+        chat_id: ChatId,
+        event: SidecarEvent,
+    },
+    /// Per-chat sidecar forwarder exited — the runner.mjs process's
+    /// stdout closed (exit, crash, external kill). Emitted exactly once
+    /// per spawn so a dead chat can flip to `Closed` status instead of
+    /// sitting as `Streaming` forever.
+    SidecarClosed {
+        chat_id: ChatId,
+    },
     /// Background-loaded list of recent sessions.
     RecentSessions(Vec<SessionInfo>),
     /// Background-loaded history messages for a resumed session.
-    HistoryLoaded(Vec<ChatMessageView>),
+    /// Tagged with the `chat_id` of the entry the history belongs to —
+    /// multiple resumes can be in flight concurrently.
+    HistoryLoaded {
+        chat_id: ChatId,
+        messages: Vec<ChatMessageView>,
+    },
     /// Left-click on the menu-bar tray icon — opens the settings window
     /// anchored below the tray icon. Coordinates are logical pixels in
     /// winit's top-left-origin system rooted at the primary monitor.
@@ -78,7 +113,12 @@ pub enum Message {
     NavUp,
     NavDown,
     SelectSkill(usize),
+    /// Click on a past (disk) session row in the idle list.
     SelectSession(usize),
+    /// Click on an active chat row in the idle list — switches the
+    /// palette to the chat view for that chat without spawning a new
+    /// sidecar.
+    SelectChat(ChatId),
     HotkeyPressed,
     /// An iced window lost focus. Carries the window id so we can dispatch
     /// palette-vs-settings blur handling separately.
@@ -86,9 +126,19 @@ pub enum Message {
     /// An iced window closed. Fired by the `close_events` subscription so
     /// we can null out `palette_window_id` / `settings_window_id`.
     WindowClosed(iced::window::Id),
-    SidecarEvent(SidecarEvent),
+    SidecarEvent {
+        chat_id: ChatId,
+        event: SidecarEvent,
+    },
+    /// The per-chat sidecar forwarder task exited — reflect that the
+    /// runner.mjs process is gone by flipping the chat's status to
+    /// `Closed` (unless it was already `Idle`).
+    SidecarClosed(ChatId),
     RecentSessionsLoaded(Vec<SessionInfo>),
-    HistoryLoaded(Vec<ChatMessageView>),
+    HistoryLoaded {
+        chat_id: ChatId,
+        messages: Vec<ChatMessageView>,
+    },
     /// Close the settings window (bound to the "esc" button in the
     /// settings panel header).
     CloseSettings,
@@ -139,19 +189,29 @@ pub struct Launchpad {
     pub filtered_skills: Vec<Skill>,
     pub selected_skill_index: usize,
 
-    pub messages: Vec<ChatMessageView>,
-    pub is_agent_ready: bool,
+    /// All chats the user has started or resumed in this process —
+    /// live (with an active `sidecar`), resumed-from-disk (no sidecar
+    /// until first follow-up), completed, errored, or closed. Keyed by
+    /// locally-allocated `ChatId` because the Claude `session_id` isn't
+    /// known until after the first turn's `result` event.
+    pub chats: BTreeMap<ChatId, ChatEntry>,
+    /// Which chat is currently rendered in the chat panel. `None` means
+    /// the palette is in the idle list view (or skills picker) — the
+    /// other entries in `chats` keep streaming in the background.
+    pub active_chat_id: Option<ChatId>,
+    pub next_chat_id: ChatId,
+
     /// Monotonically incrementing animation frame counter for the
     /// "Working…" spinner shown in the chat panel while a turn is in
-    /// flight. Driven by a `time::every` subscription that only runs
-    /// while `mode == Chatting && !is_agent_ready`.
+    /// flight and for animated status pills on idle-list rows. Driven
+    /// by a `time::every` subscription that only runs while at least
+    /// one chat is in a non-terminal state.
     pub spinner_frame: u32,
-    pub session_id: Option<String>,
-    pub current_assistant_id: Option<u64>,
-    pub next_msg_id: u64,
 
     pub recent_sessions: Vec<SessionInfo>,
-    pub selected_session_index: usize,
+    /// Unified selection index walking active chats first, then past
+    /// sessions — used for up/down nav in Mode::Idle with empty input.
+    pub selected_idle_index: usize,
 
     pub settings: AppSettings,
     pub api_key_input: String,
@@ -160,8 +220,6 @@ pub struct Launchpad {
     /// hotkey button in the settings window. Cleared when recording starts
     /// or succeeds.
     pub hotkey_error: Option<String>,
-
-    pub sidecar: Option<SpawnedSidecar>,
 
     /// The persistent launcher window. Known as soon as
     /// `iced::window::open(...)` returns; the window itself is created
@@ -221,19 +279,16 @@ impl Launchpad {
             filtered_skills: all_skills.clone(),
             all_skills,
             selected_skill_index: 0,
-            messages: Vec::new(),
-            is_agent_ready: false,
+            chats: BTreeMap::new(),
+            active_chat_id: None,
+            next_chat_id: 1,
             spinner_frame: 0,
-            session_id: None,
-            current_assistant_id: None,
-            next_msg_id: 1,
             recent_sessions: Vec::new(),
-            selected_session_index: 0,
+            selected_idle_index: 0,
             settings,
             api_key_input: String::new(),
             recording_hotkey: false,
             hotkey_error: None,
-            sidecar: None,
             palette_window_id: Some(palette_id),
             settings_window_id: None,
             settings_opened_at: None,
@@ -336,11 +391,18 @@ impl Launchpad {
             iced::window::close_events().map(Message::WindowClosed),
         ];
 
-        // Spinner animation: only tick while a chat turn is in flight.
-        // Gated on `mode == Chatting && !is_agent_ready` so we don't
-        // waste redraws from the idle palette (where `is_agent_ready`
-        // is also `false` until the first submit).
-        if self.mode == Mode::Chatting && !self.is_agent_ready {
+        // Spinner animation: tick while *any* chat is non-terminal, so
+        // both the active-chat "Working…" spinner and animated status
+        // pills on idle-list rows stay live. Gated off when all chats
+        // are at rest (Idle / Error / Closed) or when there are no
+        // chats at all, to avoid pointless redraws.
+        let any_chat_live = self.chats.values().any(|c| {
+            matches!(
+                c.state.status,
+                ChatStatus::Initializing | ChatStatus::Streaming
+            )
+        });
+        if any_chat_live {
             subs.push(
                 iced::time::every(std::time::Duration::from_millis(80))
                     .map(|_| Message::SpinnerTick),
@@ -416,23 +478,17 @@ impl Launchpad {
                 if let Some(settings_id) = self.settings_window_id {
                     return iced::window::close(settings_id);
                 }
-                match self.mode {
-                    Mode::Chatting => {
-                        self.kill_session();
-                        self.mode = Mode::Idle;
-                        self.messages.clear();
-                        self.input.clear();
-                        self.is_agent_ready = false;
-                        self.session_id = None;
-                        self.current_assistant_id = None;
-                        Task::batch([
-                            self.refresh_sessions(),
-                            self.resize_task(),
-                            text_input::focus(INPUT_ID.clone()),
-                        ])
-                    }
-                    _ => self.hide_palette(),
+                // Esc always dismisses the palette now. In Chatting mode
+                // it *preserves* the chat — the sidecar keeps streaming
+                // in the background and the entry stays in `self.chats`
+                // so the user can return to it via the idle list next
+                // time they summon the palette.
+                if self.mode == Mode::Chatting {
+                    self.active_chat_id = None;
+                    self.mode = Mode::Idle;
+                    self.input.clear();
                 }
+                self.hide_palette()
             }
 
             Message::NavUp => {
@@ -442,9 +498,9 @@ impl Launchpad {
                             self.selected_skill_index -= 1;
                         }
                     }
-                    Mode::Idle if self.input.is_empty() && !self.recent_sessions.is_empty() => {
-                        if self.selected_session_index > 0 {
-                            self.selected_session_index -= 1;
+                    Mode::Idle if self.input.is_empty() && self.idle_row_count() > 0 => {
+                        if self.selected_idle_index > 0 {
+                            self.selected_idle_index -= 1;
                         }
                     }
                     _ => {}
@@ -460,10 +516,10 @@ impl Launchpad {
                             self.selected_skill_index += 1;
                         }
                     }
-                    Mode::Idle if self.input.is_empty() && !self.recent_sessions.is_empty() => {
-                        let max = self.recent_sessions.len().saturating_sub(1);
-                        if self.selected_session_index < max {
-                            self.selected_session_index += 1;
+                    Mode::Idle if self.input.is_empty() && self.idle_row_count() > 0 => {
+                        let max = self.idle_row_count().saturating_sub(1);
+                        if self.selected_idle_index < max {
+                            self.selected_idle_index += 1;
                         }
                     }
                     _ => {}
@@ -476,10 +532,25 @@ impl Launchpad {
                 self.handle_submit()
             }
 
-            Message::SelectSession(i) => {
-                self.selected_session_index = i;
-                if let Some(session) = self.recent_sessions.get(i).cloned() {
+            Message::SelectSession(session_index) => {
+                // `session_index` is an index into the *past sessions*
+                // portion of the idle list (after filtering out dupes
+                // of active chats). The caller already passes the
+                // correct filtered index from the view builder.
+                let past = self.past_session_rows();
+                if let Some(session) = past.get(session_index).cloned() {
                     self.resume_session(session)
+                } else {
+                    Task::none()
+                }
+            }
+
+            Message::SelectChat(chat_id) => {
+                if self.chats.contains_key(&chat_id) {
+                    self.active_chat_id = Some(chat_id);
+                    self.mode = Mode::Chatting;
+                    self.input.clear();
+                    Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())])
                 } else {
                     Task::none()
                 }
@@ -487,24 +558,30 @@ impl Launchpad {
 
             Message::HotkeyPressed => self.toggle_palette(),
 
-            Message::SidecarEvent(event) => {
-                self.process_sidecar_event(event);
-                Task::none()
-            }
+            Message::SidecarEvent { chat_id, event } => self.process_sidecar_event(chat_id, event),
+
+            Message::SidecarClosed(chat_id) => self.process_sidecar_closed(chat_id),
 
             Message::RecentSessionsLoaded(sessions) => {
                 self.recent_sessions = sessions;
-                if self.selected_session_index >= self.recent_sessions.len() {
-                    self.selected_session_index = 0;
+                let max = self.idle_row_count().saturating_sub(1);
+                if self.selected_idle_index > max {
+                    self.selected_idle_index = 0;
                 }
                 // Height may change if we're idle with empty input — the
                 // session list just became populated.
                 self.resize_task()
             }
 
-            Message::HistoryLoaded(messages) => {
-                self.messages = messages;
-                self.is_agent_ready = true;
+            Message::HistoryLoaded { chat_id, messages } => {
+                if let Some(entry) = self.chats.get_mut(&chat_id) {
+                    // Reset the per-chat message id counter to walk
+                    // above whatever ids the loader handed us.
+                    let max_id = messages.iter().map(|m| m.id).max().unwrap_or(0);
+                    entry.state.messages = messages;
+                    entry.state.next_msg_id = max_id + 1;
+                    entry.state.status = ChatStatus::Idle;
+                }
                 Task::none()
             }
 
@@ -532,14 +609,19 @@ impl Launchpad {
                     } else {
                         iced::window::close(window_id)
                     }
-                } else if Some(window_id) == self.palette_window_id {
-                    // Palette lost focus → hide (unless chatting; agent
-                    // tools can steal focus by opening browser tabs).
-                    if self.mode != Mode::Chatting && self.palette_visible {
-                        self.hide_palette()
-                    } else {
-                        Task::none()
+                } else if Some(window_id) == self.palette_window_id && self.palette_visible {
+                    // Palette lost focus → hide. Chats keep streaming
+                    // in the background; if a Claude tool call opens a
+                    // browser tab, the palette just hides and the
+                    // user re-summons to see results — strictly better
+                    // than the pre-multi-chat behavior, which left a
+                    // blurred palette hovering mid-interaction.
+                    if self.mode == Mode::Chatting {
+                        self.active_chat_id = None;
+                        self.mode = Mode::Idle;
+                        self.input.clear();
                     }
+                    self.hide_palette()
                 } else {
                     Task::none()
                 }
@@ -576,10 +658,12 @@ impl Launchpad {
             } => self.open_settings_window(tray_x, tray_y, tray_w, tray_h),
 
             Message::QuitRequested => {
-                // Drop the sidecar (tokio kill_on_drop handles child cleanup)
-                // and exit the process. Bypasses iced's graceful shutdown
-                // because that path is fiddly with our NSPanel wrapping.
-                self.sidecar = None;
+                // Drop every chat entry — each holds an owned
+                // `SpawnedSidecar` whose `Child` has `kill_on_drop:
+                // true`, so clearing the map kills all runner.mjs
+                // children. Bypasses iced's graceful shutdown because
+                // that path is fiddly with our NSPanel wrapping.
+                self.chats.clear();
                 std::process::exit(0)
             }
 
@@ -648,7 +732,15 @@ impl Launchpad {
         }
 
         // Palette window: command input + mode-dependent content below.
-        let input = ui::command_input::view(&self.input, self.mode, self.is_agent_ready);
+        // `is_agent_ready` in the placeholder/hint text now reflects
+        // the *active* chat when there is one — a background chat
+        // being busy shouldn't gray out the input for a different
+        // chat you're viewing.
+        let is_agent_ready = self
+            .active_chat()
+            .map(|e| matches!(e.state.status, ChatStatus::Idle))
+            .unwrap_or(true);
+        let input = ui::command_input::view(&self.input, self.mode, is_agent_ready);
         let mut stack: Column<'_, Message> = column![input].spacing(4);
 
         match self.mode {
@@ -658,18 +750,40 @@ impl Launchpad {
                     self.selected_skill_index,
                 ));
             }
-            Mode::Idle if self.input.is_empty() && !self.recent_sessions.is_empty() => {
-                stack = stack.push(ui::session_list::view(
-                    &self.recent_sessions,
-                    self.selected_session_index,
+            Mode::Idle if self.input.is_empty() && self.idle_row_count() > 0 => {
+                // Build view-layer rows that borrow from `self`. Past
+                // sessions are filtered to exclude session_ids already
+                // represented by an active chat.
+                let active_session_ids: std::collections::HashSet<&str> = self
+                    .chats
+                    .values()
+                    .filter_map(|c| c.state.session_id.as_deref())
+                    .collect();
+                let mut rows: Vec<ui::idle_list::IdleRow<'_>> =
+                    Vec::with_capacity(self.idle_row_count());
+                for entry in self.chats.values() {
+                    rows.push(ui::idle_list::IdleRow::Active(entry));
+                }
+                for session in &self.recent_sessions {
+                    if !active_session_ids.contains(session.session_id.as_str()) {
+                        rows.push(ui::idle_list::IdleRow::Past(session));
+                    }
+                }
+                stack = stack.push(ui::idle_list::view(
+                    &rows,
+                    self.selected_idle_index,
+                    self.spinner_frame,
                 ));
             }
             Mode::Chatting => {
-                stack = stack.push(ui::chat_panel::view(
-                    &self.messages,
-                    self.is_agent_ready,
-                    self.spinner_frame,
-                ));
+                if let Some(entry) = self.active_chat() {
+                    let ready = matches!(entry.state.status, ChatStatus::Idle);
+                    stack = stack.push(ui::chat_panel::view(
+                        &entry.state.messages,
+                        ready,
+                        self.spinner_frame,
+                    ));
+                }
             }
             _ => {}
         }
@@ -685,9 +799,21 @@ impl Launchpad {
 
     fn handle_submit(&mut self) -> Task<Message> {
         match self.mode {
-            Mode::Chatting if self.is_agent_ready && !self.input.trim().is_empty() => {
-                let content = self.input.trim().to_string();
-                self.send_follow_up(content)
+            Mode::Chatting if !self.input.trim().is_empty() => {
+                // Only dispatch a follow-up if the active chat is
+                // actually ready; otherwise silently drop — today's
+                // `command_input` placeholder already reflects this
+                // state so the user sees "Waiting for response...".
+                let ready = self
+                    .active_chat()
+                    .map(|e| matches!(e.state.status, ChatStatus::Idle))
+                    .unwrap_or(false);
+                if ready {
+                    let content = self.input.trim().to_string();
+                    self.send_follow_up(content)
+                } else {
+                    Task::none()
+                }
             }
             Mode::Skills if !self.filtered_skills.is_empty() => {
                 if let Some(skill) = self.filtered_skills.get(self.selected_skill_index).cloned() {
@@ -696,15 +822,28 @@ impl Launchpad {
                     Task::none()
                 }
             }
-            Mode::Idle if self.input.is_empty() && !self.recent_sessions.is_empty() => {
-                if let Some(session) = self
-                    .recent_sessions
-                    .get(self.selected_session_index)
-                    .cloned()
-                {
-                    self.resume_session(session)
-                } else {
-                    Task::none()
+            Mode::Idle if self.input.is_empty() && self.idle_row_count() > 0 => {
+                // Dispatch based on which row is selected in the
+                // unified (active chats + past sessions) list.
+                let rows = self.build_idle_rows();
+                match rows.get(self.selected_idle_index) {
+                    Some(IdleRowSelection::Active(chat_id)) => {
+                        let cid = *chat_id;
+                        // Enter the chat view without spawning anything.
+                        if self.chats.contains_key(&cid) {
+                            self.active_chat_id = Some(cid);
+                            self.mode = Mode::Chatting;
+                            self.input.clear();
+                            Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())])
+                        } else {
+                            Task::none()
+                        }
+                    }
+                    Some(IdleRowSelection::Past(session)) => {
+                        let s = session.clone();
+                        self.resume_session(s)
+                    }
+                    None => Task::none(),
                 }
             }
             _ if !self.input.trim().is_empty() && !self.input.starts_with('/') => {
@@ -716,32 +855,76 @@ impl Launchpad {
     }
 
     fn start_chat(&mut self, prompt: String) -> Task<Message> {
+        let chat_id = self.alloc_chat_id();
+        let spawned = match self.spawn_sidecar_chat(chat_id, prompt.clone(), None) {
+            Ok(s) => s,
+            Err(e) => {
+                // Build an error-state entry so the user sees what went
+                // wrong in the chat panel (and the chat still shows in
+                // the idle list next time they summon the palette).
+                let mut state = ChatState::new(chat_id, &prompt);
+                state.push_error(format!("Failed to start agent: {e}"));
+                state.status = ChatStatus::Error;
+                self.chats.insert(
+                    chat_id,
+                    ChatEntry {
+                        state,
+                        sidecar: None,
+                    },
+                );
+                self.active_chat_id = Some(chat_id);
+                self.mode = Mode::Chatting;
+                self.input.clear();
+                return Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())]);
+            }
+        };
+
+        let state = ChatState::new(chat_id, &prompt);
+        self.chats.insert(
+            chat_id,
+            ChatEntry {
+                state,
+                sidecar: Some(spawned),
+            },
+        );
+        self.active_chat_id = Some(chat_id);
         self.mode = Mode::Chatting;
-        self.is_agent_ready = false;
-        self.session_id = None;
-        self.current_assistant_id = None;
-
-        let user_id = self.alloc_id();
-        let user_msg = ChatMessageView::user(user_id, prompt.clone());
-        self.messages.clear();
-        self.messages.push(user_msg);
         self.input.clear();
-
-        if let Err(e) = self.spawn_sidecar_chat(prompt, None) {
-            self.push_error(format!("Failed to start agent: {e}"));
-        }
 
         Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())])
     }
 
     fn resume_session(&mut self, info: SessionInfo) -> Task<Message> {
-        self.kill_session();
+        // If we already have an active chat tracking this session id,
+        // just switch to it instead of creating a duplicate entry.
+        if let Some((&existing, _)) = self
+            .chats
+            .iter()
+            .find(|(_, e)| e.state.session_id.as_deref() == Some(info.session_id.as_str()))
+        {
+            self.active_chat_id = Some(existing);
+            self.mode = Mode::Chatting;
+            self.input.clear();
+            return Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())]);
+        }
+
+        let chat_id = self.alloc_chat_id();
+        let title = info
+            .first_prompt
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| info.summary.clone());
+        let state = ChatState::resumed(chat_id, info.session_id.clone(), title);
+        self.chats.insert(
+            chat_id,
+            ChatEntry {
+                state,
+                sidecar: None,
+            },
+        );
+        self.active_chat_id = Some(chat_id);
         self.mode = Mode::Chatting;
-        self.is_agent_ready = true;
-        self.session_id = Some(info.session_id.clone());
         self.input.clear();
-        self.current_assistant_id = None;
-        self.messages.clear();
 
         // Load session history in the background via a one-shot "messages" sidecar.
         let session_id = info.session_id.clone();
@@ -750,32 +933,81 @@ impl Launchpad {
             let msgs = crate::sessions::load_messages(&session_id)
                 .await
                 .unwrap_or_default();
-            let _ = tx.send(External::HistoryLoaded(msgs));
+            let _ = tx.send(External::HistoryLoaded {
+                chat_id,
+                messages: msgs,
+            });
         });
 
         Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())])
     }
 
     fn send_follow_up(&mut self, content: String) -> Task<Message> {
-        let user_id = self.alloc_id();
-        self.messages
-            .push(ChatMessageView::user(user_id, content.clone()));
-        self.input.clear();
-        self.is_agent_ready = false;
-        self.current_assistant_id = None;
+        let Some(chat_id) = self.active_chat_id else {
+            return Task::none();
+        };
+        // Take the existing follow-up tx (if any) out of the entry
+        // *before* we need to mutate `state`, to avoid an immutable
+        // borrow of the entry overlapping with `entry.state` writes.
+        let follow_up_tx = self
+            .chats
+            .get(&chat_id)
+            .and_then(|e| e.sidecar.as_ref().map(|s| s.follow_up_tx.clone()));
+        let needs_respawn_resume_id = self.chats.get(&chat_id).and_then(|e| {
+            if e.sidecar.is_none() {
+                e.state.session_id.clone()
+            } else {
+                None
+            }
+        });
 
-        if let Some(sidecar) = self.sidecar.as_ref() {
-            let _ = sidecar.follow_up_tx.send(FollowUp::Message(content));
-        } else if let Some(resume_id) = self.session_id.clone() {
-            // Resumed from disk — spawn a fresh sidecar with the resume ID.
-            if let Err(e) = self.spawn_sidecar_chat(content, Some(resume_id)) {
-                self.push_error(format!("Failed to restart agent: {e}"));
+        // Push the user bubble + flip status to Streaming before we
+        // hand off to the sidecar.
+        if let Some(entry) = self.chats.get_mut(&chat_id) {
+            let user_id = entry.state.alloc_msg_id();
+            entry
+                .state
+                .messages
+                .push(ChatMessageView::user(user_id, content.clone()));
+            entry.state.current_assistant_id = None;
+            entry.state.status = ChatStatus::Streaming;
+        }
+        self.input.clear();
+
+        if let Some(tx) = follow_up_tx {
+            let _ = tx.send(FollowUp::Message(content));
+        } else if let Some(resume_id) = needs_respawn_resume_id {
+            // Resumed-from-disk first follow-up: spawn a fresh sidecar
+            // with the resume id and write it back into the *same*
+            // chat entry (don't allocate a new chat_id — that would
+            // create a ghost duplicate).
+            match self.spawn_sidecar_chat(chat_id, content, Some(resume_id)) {
+                Ok(spawned) => {
+                    if let Some(entry) = self.chats.get_mut(&chat_id) {
+                        entry.sidecar = Some(spawned);
+                    }
+                }
+                Err(e) => {
+                    if let Some(entry) = self.chats.get_mut(&chat_id) {
+                        entry.state.push_error(format!("Failed to restart agent: {e}"));
+                        entry.state.status = ChatStatus::Error;
+                    }
+                }
             }
         }
         Task::none()
     }
 
-    fn spawn_sidecar_chat(&mut self, prompt: String, resume: Option<String>) -> anyhow::Result<()> {
+    /// Spawn a sidecar for `chat_id` and return the handle. Sets up a
+    /// per-chat forwarder task that tags each event with `chat_id` as
+    /// it flows into the global `EXTERNAL_TX` bus, and emits a
+    /// `SidecarClosed` sentinel when the sidecar's stdout closes.
+    fn spawn_sidecar_chat(
+        &self,
+        chat_id: ChatId,
+        prompt: String,
+        resume: Option<String>,
+    ) -> anyhow::Result<SpawnedSidecar> {
         let home = sidecar::launchpad_home()?;
         let payload = Payload::chat(
             prompt,
@@ -785,118 +1017,114 @@ impl Launchpad {
         );
         let mut spawned = sidecar::spawn(payload)?;
 
-        // Forward sidecar events into the external bus.
+        // Forward sidecar events into the external bus, tagged with
+        // the chat id so the main loop can route them to the correct
+        // entry. When the reader task on the sidecar side finishes
+        // (stdout closed → runner.mjs exited), the receiver returns
+        // `None`, the loop exits, and we emit a `SidecarClosed`
+        // sentinel so the chat's status can flip to `Closed`.
         let tx = external_sender();
         let mut rx = std::mem::replace(&mut spawned.event_rx, mpsc::unbounded_channel().1);
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                if tx.send(External::Sidecar(event)).is_err() {
-                    break;
+                if tx.send(External::Sidecar { chat_id, event }).is_err() {
+                    return;
                 }
             }
+            let _ = tx.send(External::SidecarClosed { chat_id });
         });
 
-        self.sidecar = Some(spawned);
-        Ok(())
+        Ok(spawned)
     }
 
-    fn kill_session(&mut self) {
-        if let Some(sidecar) = self.sidecar.take() {
-            let _ = sidecar.follow_up_tx.send(FollowUp::Close);
-            // tokio Child has kill_on_drop; dropping the struct kills the process.
-            drop(sidecar);
-        }
-    }
-
-    fn process_sidecar_event(&mut self, event: SidecarEvent) {
-        match event {
-            SidecarEvent::Ready { .. } => {
-                self.is_agent_ready = true;
-            }
-            SidecarEvent::SessionId { session_id, .. } => {
-                self.session_id = Some(session_id);
-            }
-            SidecarEvent::TextDelta { delta, .. } => {
-                self.ensure_streaming_assistant();
-                if let Some(msg) = self.current_assistant_mut() {
-                    match msg.blocks.last_mut() {
-                        Some(ContentBlock::Text { raw, parsed }) => {
-                            raw.push_str(&delta);
-                            *parsed = iced::widget::markdown::parse(raw).collect();
-                        }
-                        _ => msg.blocks.push(ContentBlock::text(delta)),
-                    }
-                }
-            }
-            SidecarEvent::ToolStart { tool, args, .. } => {
-                self.ensure_streaming_assistant();
-                let args = args.unwrap_or_default();
-                if let Some(msg) = self.current_assistant_mut() {
-                    msg.blocks.push(ContentBlock::ToolStart { tool, args });
-                }
-            }
-            SidecarEvent::ToolEnd {
-                tool, args, result, ..
-            } => {
-                self.ensure_streaming_assistant();
-                let args = args.unwrap_or_default();
-                if let Some(msg) = self.current_assistant_mut() {
-                    msg.blocks
-                        .push(ContentBlock::ToolEnd { tool, args, result });
-                }
-            }
-            SidecarEvent::Error { error, .. } => {
-                let err = error.unwrap_or_else(|| "An error occurred".to_string());
-                if let Some(msg) = self.current_assistant_mut() {
-                    msg.status = MessageStatus::Error;
-                    msg.blocks.push(ContentBlock::Error(err));
-                } else {
-                    self.push_error(err);
-                }
-            }
-            SidecarEvent::Complete { .. } => {
-                if let Some(msg) = self.current_assistant_mut() {
-                    msg.status = MessageStatus::Complete;
-                }
-                self.current_assistant_id = None;
-            }
-            SidecarEvent::Session { .. } | SidecarEvent::ChatMessage { .. } => {
-                // These arrive from list/messages modes and are consumed by
-                // sessions.rs directly, not through this stream.
-            }
-        }
-    }
-
-    fn ensure_streaming_assistant(&mut self) {
-        let needs_new = match self.messages.last() {
-            Some(m) => m.role != Role::Assistant || m.status != MessageStatus::Streaming,
-            None => true,
+    fn process_sidecar_event(&mut self, chat_id: ChatId, event: SidecarEvent) -> Task<Message> {
+        let Some(entry) = self.chats.get_mut(&chat_id) else {
+            return Task::none();
         };
-        if needs_new {
-            let id = self.alloc_id();
-            self.current_assistant_id = Some(id);
-            self.messages.push(ChatMessageView::assistant_streaming(id));
+        let prev_status = entry.state.status;
+        entry.state.apply_event(event);
+        let status_changed = entry.state.status != prev_status;
+
+        // If the palette is currently showing the idle list and a
+        // background chat's status just flipped (e.g. Initializing →
+        // Streaming or Streaming → Idle), we may need to resize: the
+        // row content changed but the row count didn't. `resize_task`
+        // is cheap, so just dispatch it whenever the status flipped
+        // and the palette is visible in idle.
+        if status_changed
+            && self.palette_visible
+            && self.mode == Mode::Idle
+            && self.input.is_empty()
+        {
+            self.resize_task()
+        } else {
+            Task::none()
         }
     }
 
-    fn current_assistant_mut(&mut self) -> Option<&mut ChatMessageView> {
-        let id = self.current_assistant_id?;
-        self.messages.iter_mut().find(|m| m.id == id)
+    fn process_sidecar_closed(&mut self, chat_id: ChatId) -> Task<Message> {
+        let Some(entry) = self.chats.get_mut(&chat_id) else {
+            return Task::none();
+        };
+        entry.sidecar = None;
+        if !matches!(entry.state.status, ChatStatus::Idle | ChatStatus::Error) {
+            entry.state.status = ChatStatus::Closed;
+        }
+        if self.palette_visible && self.mode == Mode::Idle && self.input.is_empty() {
+            self.resize_task()
+        } else {
+            Task::none()
+        }
     }
 
-    fn push_error(&mut self, error: String) {
-        let id = self.alloc_id();
-        self.current_assistant_id = Some(id);
-        let mut msg = ChatMessageView::assistant_streaming(id);
-        msg.status = MessageStatus::Error;
-        msg.blocks.push(ContentBlock::Error(error));
-        self.messages.push(msg);
-    }
-
-    fn alloc_id(&mut self) -> u64 {
-        let id = self.next_msg_id;
-        self.next_msg_id += 1;
+    fn alloc_chat_id(&mut self) -> ChatId {
+        let id = self.next_chat_id;
+        self.next_chat_id += 1;
         id
+    }
+
+    pub fn active_chat(&self) -> Option<&ChatEntry> {
+        self.active_chat_id.and_then(|id| self.chats.get(&id))
+    }
+
+    /// How many rows the idle list currently contains — active chats
+    /// first, then past sessions that aren't dupes of an active chat's
+    /// session_id. Used by nav bounds and resize sizing.
+    fn idle_row_count(&self) -> usize {
+        self.chats.len() + self.past_session_rows().len()
+    }
+
+    /// Past sessions filtered to exclude any already represented as an
+    /// active chat (by `session_id` match). Returned as owned clones
+    /// because borrow-lifetime rules for `&self` + later mutations
+    /// through `handle_submit` etc. are simpler with owned rows.
+    fn past_session_rows(&self) -> Vec<SessionInfo> {
+        let active_ids: std::collections::HashSet<&str> = self
+            .chats
+            .values()
+            .filter_map(|c| c.state.session_id.as_deref())
+            .collect();
+        self.recent_sessions
+            .iter()
+            .filter(|s| !active_ids.contains(s.session_id.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    /// Build the unified idle-list selection list. Used by
+    /// `handle_submit` to map `selected_idle_index` to either a
+    /// ChatId or a past SessionInfo. The analogous `build_idle_rows`
+    /// produces the view-layer rows with references.
+    fn build_idle_rows(&self) -> Vec<IdleRowSelection> {
+        let mut rows: Vec<IdleRowSelection> = Vec::with_capacity(self.idle_row_count());
+        // Active chats first, in insertion order (BTreeMap iterates by id).
+        for (&id, _) in self.chats.iter() {
+            rows.push(IdleRowSelection::Active(id));
+        }
+        for session in self.past_session_rows() {
+            rows.push(IdleRowSelection::Past(session));
+        }
+        rows
     }
 
     fn refresh_sessions(&self) -> Task<Message> {
@@ -936,8 +1164,8 @@ impl Launchpad {
                 BASE + (n * ROW).min(MAX_LIST)
             }
             Mode::Idle => {
-                if self.input.is_empty() && !self.recent_sessions.is_empty() {
-                    let n = self.recent_sessions.len().max(1) as f32;
+                if self.input.is_empty() && self.idle_row_count() > 0 {
+                    let n = self.idle_row_count().max(1) as f32;
                     BASE + (n * ROW).min(MAX_LIST)
                 } else {
                     BASE
@@ -966,17 +1194,24 @@ impl Launchpad {
 
     fn show_palette(&mut self) -> Task<Message> {
         self.palette_visible = true;
-        // Input is prefilled with "/", so we land directly in Skills mode —
-        // the view only renders the skill list when `mode == Skills`.
-        self.mode = Mode::Skills;
-        self.input = "/".to_string();
-        self.filtered_skills = self.all_skills.clone();
-        self.selected_skill_index = 0;
-        self.selected_session_index = 0;
-        self.messages.clear();
-        self.is_agent_ready = false;
-        self.session_id = None;
-        self.current_assistant_id = None;
+        // When no chats exist, keep the pre-multi-chat behavior of
+        // opening directly into the skills picker with "/" prefilled —
+        // users who never leave a chat running see zero regression.
+        // With chats present (running, completed, resumed-from-disk),
+        // land in Idle with an empty input so the unified list of
+        // active chats + past sessions is visible.
+        if self.chats.is_empty() {
+            self.mode = Mode::Skills;
+            self.input = "/".to_string();
+            self.filtered_skills = self.all_skills.clone();
+            self.selected_skill_index = 0;
+        } else {
+            self.mode = Mode::Idle;
+            self.input.clear();
+            self.selected_idle_index = 0;
+        }
+        // Never clear `self.chats` or `self.active_chat_id` — those
+        // carry the state the user expects to come back to.
 
         let Some(id) = self.palette_window_id else {
             return Task::none();
@@ -1084,9 +1319,14 @@ fn external_subscription_stream() -> impl Stream<Item = Message> {
         while let Some(event) = rx.recv().await {
             let msg = match event {
                 External::HotkeyPressed => Message::HotkeyPressed,
-                External::Sidecar(ev) => Message::SidecarEvent(ev),
+                External::Sidecar { chat_id, event } => {
+                    Message::SidecarEvent { chat_id, event }
+                }
+                External::SidecarClosed { chat_id } => Message::SidecarClosed(chat_id),
                 External::RecentSessions(s) => Message::RecentSessionsLoaded(s),
-                External::HistoryLoaded(m) => Message::HistoryLoaded(m),
+                External::HistoryLoaded { chat_id, messages } => {
+                    Message::HistoryLoaded { chat_id, messages }
+                }
                 External::TrayClicked {
                     tray_x,
                     tray_y,
