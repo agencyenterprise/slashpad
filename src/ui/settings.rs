@@ -8,7 +8,8 @@ use crate::app::Message;
 pub fn view<'a>(
     api_key_input: &'a str,
     current_hotkey: &'a str,
-    _recording: bool,
+    recording: bool,
+    hotkey_error: Option<&'a str>,
 ) -> Element<'a, Message> {
     let header = row![
         text("Settings").size(13).color(super::theme::TEXT),
@@ -55,13 +56,45 @@ pub fn view<'a>(
     ]
     .spacing(6);
 
-    let hotkey_row = column![
+    let hotkey_label_text = if recording {
+        "Press a shortcut…".to_string()
+    } else {
+        current_hotkey.to_string()
+    };
+    let hotkey_label_color = if recording {
+        super::theme::MUTED
+    } else {
+        super::theme::TEXT
+    };
+    let hotkey_on_press = if recording {
+        Message::CancelRecordHotkey
+    } else {
+        Message::StartRecordHotkey
+    };
+
+    let hotkey_button = button(text(hotkey_label_text).size(13).color(hotkey_label_color))
+        .on_press(hotkey_on_press)
+        .padding([8, 14])
+        .style(|_, _| iced::widget::button::Style {
+            background: Some(iced::Background::Color(super::theme::SURFACE_2)),
+            text_color: super::theme::TEXT,
+            border: iced::Border {
+                color: super::theme::SURFACE_3,
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..Default::default()
+        });
+
+    let mut hotkey_row = column![
         text("Global Hotkey").size(11).color(super::theme::MUTED),
-        text(current_hotkey.to_string())
-            .size(13)
-            .color(super::theme::TEXT),
+        hotkey_button,
     ]
     .spacing(6);
+
+    if let Some(err) = hotkey_error {
+        hotkey_row = hotkey_row.push(text(err.to_string()).size(11).color(super::theme::DANGER));
+    }
 
     let actions = row![
         button(text("Show Launcher").size(12).color(super::theme::TEXT))

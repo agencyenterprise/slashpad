@@ -104,6 +104,16 @@ pub enum Message {
     },
     /// Tray menu "Quit Launchpad" → drop sidecar, exit process.
     QuitRequested,
+    /// User clicked the hotkey button in settings → begin listening for a
+    /// new chord.
+    StartRecordHotkey,
+    /// User pressed Esc or clicked the button a second time while
+    /// recording → abort and keep the existing hotkey.
+    CancelRecordHotkey,
+    /// The recording subscription captured a full chord (at least one
+    /// non-modifier key). Carries the canonical chord string produced by
+    /// `hotkey::format_chord`.
+    HotkeyCaptured(String),
 }
 
 /// Root application state.
@@ -132,6 +142,10 @@ pub struct Launchpad {
     pub settings: AppSettings,
     pub api_key_input: String,
     pub recording_hotkey: bool,
+    /// Last error surfaced from `hotkey::update_hotkey`, shown under the
+    /// hotkey button in the settings window. Cleared when recording starts
+    /// or succeeds.
+    pub hotkey_error: Option<String>,
 
     pub sidecar: Option<SpawnedSidecar>,
 
@@ -203,6 +217,7 @@ impl Launchpad {
             settings,
             api_key_input: String::new(),
             recording_hotkey: false,
+            hotkey_error: None,
             sidecar: None,
             palette_window_id: Some(palette_id),
             settings_window_id: None,
@@ -266,7 +281,7 @@ impl Launchpad {
     pub fn subscription(&self) -> Subscription<Message> {
         use iced::keyboard::key::Named;
         use iced::keyboard::Key;
-        Subscription::batch([
+        let mut subs: Vec<Subscription<Message>> = vec![
             Subscription::run(external_subscription_stream),
             // ArrowUp/Down propagate normally through text_input (it returns
             // Status::Ignored for them), so on_key_press is fine here.
@@ -293,7 +308,33 @@ impl Launchpad {
                 _ => None,
             }),
             iced::window::close_events().map(Message::WindowClosed),
-        ])
+        ];
+
+        // Hotkey recorder: only active while the user is capturing a new
+        // chord. `listen_with` (not `on_key_press`) so it sees events even
+        // when the API-key text_input is focused and would otherwise
+        // capture letter presses.
+        if self.recording_hotkey {
+            subs.push(iced::event::listen_with(|event, _status, _window_id| {
+                match event {
+                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        key,
+                        modifiers,
+                        ..
+                    }) => {
+                        // Let the existing Esc handler route this to
+                        // EscapePressed, which cancels recording.
+                        if matches!(key, Key::Named(Named::Escape)) {
+                            return None;
+                        }
+                        hotkey::format_chord(&key, modifiers).map(Message::HotkeyCaptured)
+                    }
+                    _ => None,
+                }
+            }));
+        }
+
+        Subscription::batch(subs)
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -323,6 +364,13 @@ impl Launchpad {
             Message::Submit => self.handle_submit(),
 
             Message::EscapePressed => {
+                // If a hotkey recording is in progress, Esc cancels the
+                // recording rather than closing the settings window.
+                if self.recording_hotkey {
+                    self.recording_hotkey = false;
+                    self.hotkey_error = None;
+                    return Task::none();
+                }
                 // Settings window takes precedence: close it if it's open.
                 // The on_key_press subscription fires regardless of which
                 // iced window is focused, so this handles both "Esc while
@@ -497,6 +545,33 @@ impl Launchpad {
                 self.sidecar = None;
                 std::process::exit(0)
             }
+
+            Message::StartRecordHotkey => {
+                self.recording_hotkey = true;
+                self.hotkey_error = None;
+                Task::none()
+            }
+
+            Message::CancelRecordHotkey => {
+                self.recording_hotkey = false;
+                self.hotkey_error = None;
+                Task::none()
+            }
+
+            Message::HotkeyCaptured(chord) => {
+                match hotkey::update_hotkey(&chord) {
+                    Ok(()) => {
+                        self.settings.hotkey = chord;
+                        let _ = self.settings.save();
+                        self.hotkey_error = None;
+                    }
+                    Err(e) => {
+                        self.hotkey_error = Some(e.to_string());
+                    }
+                }
+                self.recording_hotkey = false;
+                Task::none()
+            }
         }
     }
 
@@ -507,6 +582,7 @@ impl Launchpad {
                 &self.api_key_input,
                 &self.settings.hotkey,
                 self.recording_hotkey,
+                self.hotkey_error.as_deref(),
             ))
             .padding(8)
             .width(iced::Length::Fill)

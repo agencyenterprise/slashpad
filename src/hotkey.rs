@@ -164,6 +164,76 @@ pub fn spawn(initial_shortcut: &str) -> Result<mpsc::UnboundedReceiver<()>, Hotk
     Ok(rx)
 }
 
+/// Build a canonical chord string (parseable by `parse_hotkey`) from an iced
+/// key event. Returns `None` for modifier-only presses — callers should keep
+/// recording until a "real" key arrives.
+///
+/// Modifier order is fixed (`Ctrl+Alt+Shift+Cmd+<key>`) so the same chord
+/// always serializes the same way.
+pub fn format_chord(
+    key: &iced::keyboard::Key,
+    modifiers: iced::keyboard::Modifiers,
+) -> Option<String> {
+    use iced::keyboard::key::Named;
+    use iced::keyboard::Key;
+
+    let key_token: String = match key {
+        Key::Named(named) => match named {
+            // Skip modifier-only presses — wait for a real key.
+            Named::Shift | Named::Control | Named::Alt | Named::Super | Named::Meta => {
+                return None
+            }
+            Named::Space => "Space".into(),
+            Named::Enter => "Enter".into(),
+            Named::Tab => "Tab".into(),
+            Named::Backspace => "Backspace".into(),
+            Named::Delete => "Delete".into(),
+            Named::Escape => "Escape".into(),
+            Named::ArrowUp => "Up".into(),
+            Named::ArrowDown => "Down".into(),
+            Named::ArrowLeft => "Left".into(),
+            Named::ArrowRight => "Right".into(),
+            Named::F1 => "F1".into(),
+            Named::F2 => "F2".into(),
+            Named::F3 => "F3".into(),
+            Named::F4 => "F4".into(),
+            Named::F5 => "F5".into(),
+            Named::F6 => "F6".into(),
+            Named::F7 => "F7".into(),
+            Named::F8 => "F8".into(),
+            Named::F9 => "F9".into(),
+            Named::F10 => "F10".into(),
+            Named::F11 => "F11".into(),
+            Named::F12 => "F12".into(),
+            _ => return None,
+        },
+        Key::Character(c) => {
+            let s = c.as_str();
+            if s.is_empty() {
+                return None;
+            }
+            s.to_ascii_uppercase()
+        }
+        Key::Unidentified => return None,
+    };
+
+    let mut parts: Vec<&str> = Vec::with_capacity(5);
+    if modifiers.control() {
+        parts.push("Ctrl");
+    }
+    if modifiers.alt() {
+        parts.push("Alt");
+    }
+    if modifiers.shift() {
+        parts.push("Shift");
+    }
+    if modifiers.logo() {
+        parts.push("Cmd");
+    }
+    parts.push(&key_token);
+    Some(parts.join("+"))
+}
+
 /// Swap the current hotkey for a new one. Returns `Ok` on success; reverts on
 /// failure.
 pub fn update_hotkey(new_shortcut: &str) -> Result<(), HotkeyError> {
