@@ -268,13 +268,25 @@ impl Launchpad {
         use iced::keyboard::Key;
         Subscription::batch([
             Subscription::run(external_subscription_stream),
+            // ArrowUp/Down propagate normally through text_input (it returns
+            // Status::Ignored for them), so on_key_press is fine here.
             iced::keyboard::on_key_press(|key, _modifiers| match key.as_ref() {
-                Key::Named(Named::Escape) => Some(Message::EscapePressed),
                 Key::Named(Named::ArrowUp) => Some(Message::NavUp),
                 Key::Named(Named::ArrowDown) => Some(Message::NavDown),
                 _ => None,
             }),
+            // Escape must use listen_with (not on_key_press) because iced's
+            // text_input widget captures Escape when focused — it clears its
+            // own focus and returns Status::Captured, which hides the event
+            // from on_key_press. listen_with receives events regardless of
+            // capture status, so we see the first press.
             iced::event::listen_with(|event, _status, window_id| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key, ..
+                }) => match key.as_ref() {
+                    Key::Named(Named::Escape) => Some(Message::EscapePressed),
+                    _ => None,
+                },
                 iced::Event::Window(iced::window::Event::Unfocused) => {
                     Some(Message::WindowBlurred(window_id))
                 }
