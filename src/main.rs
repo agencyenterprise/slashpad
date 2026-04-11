@@ -3,7 +3,6 @@
 mod app;
 mod fuzzy;
 mod hotkey;
-mod markdown;
 mod platform;
 mod sessions;
 mod settings;
@@ -49,10 +48,30 @@ fn main() -> iced::Result {
     // settings window are each their own iced window. `iced::daemon` starts
     // with no windows; `Launchpad::new()` returns a task that opens the
     // palette via `iced::window::open(...)`.
+    //
+    // Font bundling: iced's built-in Fira Sans has very narrow glyph
+    // coverage — no dingbats (● ✓ ✗), no bullet (•), no Braille, and
+    // nothing in the emoji ranges — so any of those characters render
+    // as tofu in the chat panel. We bundle two fonts and let
+    // cosmic-text/iced_glyphon pick the right one per glyph:
+    //
+    //   - DejaVu Sans (primary, 739KB): covers Latin + extended,
+    //     symbols, dingbats, geometric shapes, Braille — everything
+    //     the tool-line icons and markdown bullets need.
+    //   - Noto Color Emoji (fallback, 10MB CBDT): covers the
+    //     supplementary emoji plane (U+1F300+) that Claude emits in
+    //     responses. iced_glyphon 0.6 handles `SwashContent::Color`
+    //     via `ContentType::Color`, so the CBDT color bitmaps render
+    //     as real color emoji, not monochrome silhouettes.
+    const DEJAVU_SANS: &[u8] = include_bytes!("../fonts/DejaVuSans.ttf");
+    const NOTO_COLOR_EMOJI: &[u8] = include_bytes!("../fonts/NotoColorEmoji.ttf");
     iced::daemon(Launchpad::title, Launchpad::update, Launchpad::view)
         .subscription(Launchpad::subscription)
         .theme(Launchpad::theme)
         .style(Launchpad::style)
         .antialiasing(true)
+        .font(DEJAVU_SANS)
+        .font(NOTO_COLOR_EMOJI)
+        .default_font(iced::Font::with_name("DejaVu Sans"))
         .run_with(Launchpad::new)
 }

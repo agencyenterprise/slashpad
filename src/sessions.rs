@@ -56,7 +56,7 @@ pub async fn load_messages(session_id: &str) -> anyhow::Result<Vec<ChatMessageVi
                 let mut blocks: Vec<ContentBlock> = Vec::new();
                 if let Some(text) = content.as_ref() {
                     if !text.is_empty() {
-                        blocks.push(ContentBlock::Text(text.clone()));
+                        blocks.push(ContentBlock::text(text.clone()));
                     }
                 }
                 if let Some(events) = tool_events {

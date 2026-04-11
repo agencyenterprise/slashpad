@@ -60,7 +60,7 @@ pub fn view(block: &ContentBlock) -> Element<'_, Message> {
             .size(12)
             .color(super::theme::DANGER)
             .into(),
-        ContentBlock::Text(_) => container(text("")).width(Length::Shrink).into(),
+        ContentBlock::Text { .. } => container(text("")).width(Length::Shrink).into(),
     }
 }
 

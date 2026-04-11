@@ -114,6 +114,15 @@ pub enum Message {
     /// non-modifier key). Carries the canonical chord string produced by
     /// `hotkey::format_chord`.
     HotkeyCaptured(String),
+    /// Animation tick for the "Working…" spinner in the chat panel.
+    /// Emitted by a `time::every` subscription only while a turn is in
+    /// flight.
+    SpinnerTick,
+    /// A user clicked a link inside a rendered markdown message.
+    /// Currently a no-op — we just log it. Plumbed because
+    /// `iced::widget::markdown::view` returns an `Element<Url>` and
+    /// we need a `Message` to map into.
+    MarkdownLinkClicked(iced::widget::markdown::Url),
 }
 
 /// Root application state.
@@ -132,6 +141,11 @@ pub struct Launchpad {
 
     pub messages: Vec<ChatMessageView>,
     pub is_agent_ready: bool,
+    /// Monotonically incrementing animation frame counter for the
+    /// "Working…" spinner shown in the chat panel while a turn is in
+    /// flight. Driven by a `time::every` subscription that only runs
+    /// while `mode == Chatting && !is_agent_ready`.
+    pub spinner_frame: u32,
     pub session_id: Option<String>,
     pub current_assistant_id: Option<u64>,
     pub next_msg_id: u64,
@@ -209,6 +223,7 @@ impl Launchpad {
             selected_skill_index: 0,
             messages: Vec::new(),
             is_agent_ready: false,
+            spinner_frame: 0,
             session_id: None,
             current_assistant_id: None,
             next_msg_id: 1,
@@ -320,6 +335,17 @@ impl Launchpad {
             }),
             iced::window::close_events().map(Message::WindowClosed),
         ];
+
+        // Spinner animation: only tick while a chat turn is in flight.
+        // Gated on `mode == Chatting && !is_agent_ready` so we don't
+        // waste redraws from the idle palette (where `is_agent_ready`
+        // is also `false` until the first submit).
+        if self.mode == Mode::Chatting && !self.is_agent_ready {
+            subs.push(
+                iced::time::every(std::time::Duration::from_millis(80))
+                    .map(|_| Message::SpinnerTick),
+            );
+        }
 
         // Hotkey recorder: only active while the user is capturing a new
         // chord. `listen_with` (not `on_key_press`) so it sees events even
@@ -583,6 +609,26 @@ impl Launchpad {
                 self.recording_hotkey = false;
                 Task::none()
             }
+
+            Message::SpinnerTick => {
+                self.spinner_frame = self.spinner_frame.wrapping_add(1);
+                Task::none()
+            }
+
+            Message::MarkdownLinkClicked(url) => {
+                // Hand off to the macOS `open` command, which routes
+                // http(s) URLs to the user's default browser. Spawning
+                // (not waiting) so the palette stays responsive, and
+                // best-effort — if the spawn fails for some reason we
+                // just log it.
+                if let Err(e) = std::process::Command::new("open")
+                    .arg(url.as_str())
+                    .spawn()
+                {
+                    eprintln!("[launchpad] failed to open link {url}: {e}");
+                }
+                Task::none()
+            }
         }
     }
 
@@ -619,7 +665,11 @@ impl Launchpad {
                 ));
             }
             Mode::Chatting => {
-                stack = stack.push(ui::chat_panel::view(&self.messages, self.is_agent_ready));
+                stack = stack.push(ui::chat_panel::view(
+                    &self.messages,
+                    self.is_agent_ready,
+                    self.spinner_frame,
+                ));
             }
             _ => {}
         }
@@ -770,8 +820,11 @@ impl Launchpad {
                 self.ensure_streaming_assistant();
                 if let Some(msg) = self.current_assistant_mut() {
                     match msg.blocks.last_mut() {
-                        Some(ContentBlock::Text(buf)) => buf.push_str(&delta),
-                        _ => msg.blocks.push(ContentBlock::Text(delta)),
+                        Some(ContentBlock::Text { raw, parsed }) => {
+                            raw.push_str(&delta);
+                            *parsed = iced::widget::markdown::parse(raw).collect();
+                        }
+                        _ => msg.blocks.push(ContentBlock::text(delta)),
                     }
                 }
             }
