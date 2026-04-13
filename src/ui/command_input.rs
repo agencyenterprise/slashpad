@@ -19,7 +19,22 @@ pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Messag
         .on_submit(Message::Submit)
         .size(15)
         .padding(12)
-        .width(Length::Fill);
+        .width(Length::Fill)
+        .style(|_theme: &iced::Theme, _status| iced::widget::text_input::Style {
+            background: iced::Background::Color(iced::Color::TRANSPARENT),
+            border: iced::Border {
+                color: iced::Color::TRANSPARENT,
+                width: 0.0,
+                radius: 0.0.into(),
+            },
+            icon: super::theme::MUTED,
+            placeholder: super::theme::MUTED,
+            value: super::theme::TEXT,
+            selection: iced::Color {
+                a: 0.35,
+                ..super::theme::ACCENT
+            },
+        });
 
     let hint = match mode {
         Mode::Chatting if is_agent_ready && !value.is_empty() => "↵ reply",
