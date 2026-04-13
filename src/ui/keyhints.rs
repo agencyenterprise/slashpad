@@ -47,9 +47,15 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         Mode::Settings => vec![],
     };
 
+    // Split: `esc` hints render flush-left, everything else flush-right.
+    let (left, right): (Vec<_>, Vec<_>) = hints.into_iter().partition(|(key, _)| *key == "esc");
+
     let mut bar: Row<'static, Message> = Row::new().spacing(12).align_y(iced::Alignment::Center);
+    for (key, label) in left {
+        bar = bar.push(hint_item(key, label));
+    }
     bar = bar.push(horizontal_space().width(Length::Fill));
-    for (key, label) in hints {
+    for (key, label) in right {
         bar = bar.push(hint_item(key, label));
     }
 
