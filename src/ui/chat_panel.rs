@@ -33,7 +33,12 @@ pub fn view<'a>(
         col = col.push(spinner_row(spinner_frame));
     }
 
-    container(scrollable(col).height(Length::Fill))
+    container(
+        scrollable(col)
+            .height(Length::Fill)
+            .direction(super::theme::scrollbar_direction())
+            .style(super::theme::scrollbar_style),
+    )
         .padding(14)
         .width(Length::Fill)
         .height(Length::Fixed(480.0))

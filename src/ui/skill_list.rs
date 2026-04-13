@@ -72,7 +72,12 @@ pub fn view(
     // exceeds the cap, while allowing the panel to shrink to content
     // (no dead space) for short lists. Matches `MAX_LIST` in
     // `Launchpad::target_height`.
-    container(scrollable(col).id(scroll_id))
+    container(
+        scrollable(col)
+            .id(scroll_id)
+            .direction(super::theme::scrollbar_direction())
+            .style(super::theme::scrollbar_style),
+    )
         .padding(0)
         .width(Length::Fill)
         .max_height(260.0)

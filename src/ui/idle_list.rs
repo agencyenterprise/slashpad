@@ -106,7 +106,12 @@ pub fn view<'a>(
     }
 
     // See `skill_list::view` for the `max_height` rationale.
-    container(scrollable(col).id(scroll_id))
+    container(
+        scrollable(col)
+            .id(scroll_id)
+            .direction(super::theme::scrollbar_direction())
+            .style(super::theme::scrollbar_style),
+    )
         .padding(0)
         .width(Length::Fill)
         .max_height(260.0)
