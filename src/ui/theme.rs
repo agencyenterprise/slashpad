@@ -100,6 +100,19 @@ pub fn scrollbar_style(
     }
 }
 
+/// Thin horizontal divider line in SURFACE_3, used between the sections
+/// of the unified palette card (input / middle panel / keyhints).
+pub fn divider<Message: 'static>() -> iced::Element<'static, Message> {
+    iced::widget::horizontal_rule(1)
+        .style(|_theme: &iced::Theme| iced::widget::rule::Style {
+            color: SURFACE_3,
+            width: 1,
+            radius: 0.0.into(),
+            fill_mode: iced::widget::rule::FillMode::Full,
+        })
+        .into()
+}
+
 pub fn dark_theme() -> Theme {
     Theme::custom(
         "Launchpad Dark".to_string(),

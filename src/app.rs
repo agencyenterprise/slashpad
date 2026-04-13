@@ -1139,10 +1139,11 @@ impl Launchpad {
             .map(|e| matches!(e.state.status, ChatStatus::Idle))
             .unwrap_or(true);
         let input = ui::command_input::view(&self.input, self.mode, is_agent_ready);
-        let mut stack: Column<'_, Message> = column![input].spacing(4);
+        let mut stack: Column<'_, Message> = column![input].spacing(0);
 
         match self.mode {
             Mode::Skills => {
+                stack = stack.push(ui::theme::divider());
                 stack = stack.push(ui::skill_list::view(
                     &self.filtered_skills,
                     self.selected_skill_index,
@@ -1172,6 +1173,7 @@ impl Launchpad {
                 } else {
                     usize::MAX
                 };
+                stack = stack.push(ui::theme::divider());
                 stack = stack.push(ui::idle_list::view(
                     rows,
                     selected,
@@ -1182,6 +1184,7 @@ impl Launchpad {
             Mode::Chatting => {
                 if let Some(entry) = self.active_chat() {
                     let ready = matches!(entry.state.status, ChatStatus::Idle);
+                    stack = stack.push(ui::theme::divider());
                     stack = stack.push(ui::chat_panel::view(
                         &entry.state.messages,
                         ready,
@@ -1193,6 +1196,7 @@ impl Launchpad {
             _ => {}
         }
 
+        stack = stack.push(ui::theme::divider());
         stack = stack.push(ui::keyhints::view(
             self.mode,
             ui::keyhints::KeyhintContext {
@@ -1205,7 +1209,25 @@ impl Launchpad {
             },
         ));
 
-        container(stack)
+        // Unified rounded card: one SURFACE_1 surface + one SURFACE_3
+        // border around the whole stack. Individual sections (input,
+        // middle panel, keyhints) render with no border/background —
+        // `ui::theme::divider()` rows draw the thin section lines.
+        let card = container(stack)
+            .width(iced::Length::Fill)
+            .style(|_theme: &iced::Theme| iced::widget::container::Style {
+                background: Some(iced::Background::Color(ui::theme::SURFACE_1)),
+                border: iced::Border {
+                    color: ui::theme::SURFACE_3,
+                    width: 1.0,
+                    radius: 14.0.into(),
+                },
+                text_color: Some(ui::theme::TEXT),
+                ..Default::default()
+            })
+            .clip(true);
+
+        container(card)
             .padding(8)
             .width(iced::Length::Fill)
             .height(iced::Length::Fill)

@@ -79,11 +79,11 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         .padding([6, 12])
         .width(Length::Fill)
         .style(|_theme: &iced::Theme| iced::widget::container::Style {
-            background: Some(iced::Background::Color(theme::SURFACE_1)),
+            background: None,
             border: iced::Border {
-                color: theme::SURFACE_3,
-                width: 1.0,
-                radius: 12.0.into(),
+                color: iced::Color::TRANSPARENT,
+                width: 0.0,
+                radius: 0.0.into(),
             },
             text_color: Some(theme::TEXT),
             ..Default::default()

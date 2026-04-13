@@ -118,11 +118,11 @@ pub fn view<'a>(
         .width(Length::Fill)
         .max_height(260.0)
         .style(|_theme: &iced::Theme| iced::widget::container::Style {
-            background: Some(iced::Background::Color(super::theme::SURFACE_1)),
+            background: None,
             border: iced::Border {
-                color: super::theme::SURFACE_3,
-                width: 1.0,
-                radius: 12.0.into(),
+                color: iced::Color::TRANSPARENT,
+                width: 0.0,
+                radius: 0.0.into(),
             },
             text_color: Some(super::theme::TEXT),
             ..Default::default()
@@ -130,17 +130,12 @@ pub fn view<'a>(
         .into()
 }
 
-/// Per-row corner radii that match the panel's 12px border on the outer
-/// edges. Without this, a highlighted first/last row draws sharp corners
-/// that poke outside the rounded panel.
-fn selection_radius(is_first: bool, is_last: bool) -> iced::border::Radius {
-    let r = 11.0;
-    iced::border::Radius {
-        top_left: if is_first { r } else { 0.0 },
-        top_right: if is_first { r } else { 0.0 },
-        bottom_left: if is_last { r } else { 0.0 },
-        bottom_right: if is_last { r } else { 0.0 },
-    }
+/// Per-row corner radii. The panel no longer has its own rounded frame
+/// (the unified outer container in `app.rs::view()` provides that), so
+/// every row draws square selection corners flush with the section
+/// dividers above and below.
+fn selection_radius(_is_first: bool, _is_last: bool) -> iced::border::Radius {
+    0.0.into()
 }
 
 fn status_text(status: ChatStatus, spinner_frame: u32) -> String {

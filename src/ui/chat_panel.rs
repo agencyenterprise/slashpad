@@ -46,11 +46,11 @@ pub fn view<'a>(
         .width(Length::Fill)
         .height(Length::Fixed(480.0))
         .style(|_theme: &iced::Theme| iced::widget::container::Style {
-            background: Some(iced::Background::Color(super::theme::SURFACE_1)),
+            background: None,
             border: iced::Border {
-                color: super::theme::SURFACE_3,
-                width: 1.0,
-                radius: 12.0.into(),
+                color: iced::Color::TRANSPARENT,
+                width: 0.0,
+                radius: 0.0.into(),
             },
             text_color: Some(super::theme::TEXT),
             ..Default::default()
