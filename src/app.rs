@@ -179,6 +179,12 @@ pub enum Message {
     InputChanged(String),
     Submit,
     EscapePressed,
+    /// Cmd+Backspace in the launcher — clears the input. Carries the
+    /// window id so the handler can ignore the keystroke when it fired
+    /// inside the Settings window (which has its own text input).
+    ClearLauncherInput {
+        window_id: iced::window::Id,
+    },
     NavUp,
     NavDown,
     SelectSkill(usize),
@@ -494,6 +500,11 @@ impl Launchpad {
                     {
                         return Some(Message::OpenSessionInTerminal);
                     }
+                    if modifiers.command()
+                        && matches!(key.as_ref(), Key::Named(Named::Backspace))
+                    {
+                        return Some(Message::ClearLauncherInput { window_id });
+                    }
                     match key.as_ref() {
                         Key::Named(Named::Escape) => Some(Message::EscapePressed),
                         _ => None,
@@ -572,6 +583,36 @@ impl Launchpad {
                 } else if self.mode == Mode::Skills {
                     self.mode = Mode::Idle;
                     self.filtered_skills.clear();
+                }
+                self.resize_task()
+            }
+
+            Message::ClearLauncherInput { window_id } => {
+                // The Settings window has its own API-key text_input — let
+                // Cmd+Backspace do whatever the OS/iced defaults do there
+                // instead of stomping on it.
+                if Some(window_id) == self.settings_window_id {
+                    return Task::none();
+                }
+                // Already empty — skip the resize to avoid a pointless
+                // redraw (every `iced::window::resize` on macOS blits the
+                // whole window, even when the dimensions are unchanged).
+                if self.input.is_empty() {
+                    return Task::none();
+                }
+                self.input.clear();
+                // Mirror the Skills → Idle transition in `InputChanged`
+                // so dismissing `/foo` via Cmd+Backspace also collapses
+                // the skills list.
+                if self.mode == Mode::Skills {
+                    self.mode = Mode::Idle;
+                    self.filtered_skills.clear();
+                }
+                // Skip the resize in Chatting mode — the follow-up draft
+                // clearing doesn't change `target_height`, so calling
+                // `resize` would just trigger a redundant redraw.
+                if self.mode == Mode::Chatting {
+                    return Task::none();
                 }
                 self.resize_task()
             }
