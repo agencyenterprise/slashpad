@@ -115,10 +115,11 @@ pub fn dark_theme() -> Theme {
 
 /// Initial iced window settings for the palette window.
 pub fn palette_window_settings() -> iced::window::Settings {
+    let h = 90.0 + super::keyhints::BAR_HEIGHT;
     iced::window::Settings {
-        size: iced::Size::new(720.0, 90.0),
+        size: iced::Size::new(720.0, h),
         position: iced::window::Position::Centered,
-        min_size: Some(iced::Size::new(720.0, 90.0)),
+        min_size: Some(iced::Size::new(720.0, h)),
         max_size: None,
         visible: false,
         resizable: false,

@@ -877,6 +877,14 @@ impl Launchpad {
             _ => {}
         }
 
+        stack = stack.push(ui::keyhints::view(
+            self.mode,
+            ui::keyhints::KeyhintContext {
+                has_rows: self.idle_row_count() > 0,
+                input_empty: self.input.is_empty(),
+            },
+        ));
+
         container(stack)
             .padding(8)
             .width(iced::Length::Fill)
@@ -1250,22 +1258,23 @@ impl Launchpad {
         const ROW: f32 = 52.0;
         const MAX_LIST: f32 = 260.0;
         const CHAT: f32 = 480.0;
+        let keyhints = ui::keyhints::BAR_HEIGHT;
         match self.mode {
-            Mode::Chatting => BASE + CHAT,
+            Mode::Chatting => BASE + CHAT + keyhints,
             // Palette never enters Settings mode now (settings is a
             // separate window); return BASE as a safe fallback if it ever
             // somehow does.
-            Mode::Settings => BASE,
+            Mode::Settings => BASE + keyhints,
             Mode::Skills => {
                 let n = self.filtered_skills.len().max(1) as f32;
-                BASE + (n * ROW).min(MAX_LIST)
+                BASE + (n * ROW).min(MAX_LIST) + keyhints
             }
             Mode::Idle => {
                 if self.input.is_empty() && self.idle_row_count() > 0 {
                     let n = self.idle_row_count().max(1) as f32;
-                    BASE + (n * ROW).min(MAX_LIST)
+                    BASE + (n * ROW).min(MAX_LIST) + keyhints
                 } else {
-                    BASE
+                    BASE + keyhints
                 }
             }
         }
