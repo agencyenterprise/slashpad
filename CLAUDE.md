@@ -36,10 +36,10 @@ There are no automated tests.
 - `skills.rs` — SKILL.md loader (walks `~/.launchpad/.claude/skills`, parses frontmatter with `serde_yaml`). Also seeds `skill-creator` via `include_dir!("bundled-skills/skill-creator")`.
 - `sessions.rs` — One-shot sidecar runs in `list`/`messages` mode to fetch recent sessions and past session messages.
 - `fuzzy.rs` — `nucleo-matcher` wrapper replacing Fuse.js.
-- `markdown.rs` — `pulldown-cmark` → flat text. (Rich widget rendering is future work.)
+- `tray.rs` — menu-bar tray icon (`tray-icon` → `NSStatusItem`). Created on the main thread in `main()` before iced starts; click/menu events are forwarded into the `External` bus.
 - `sidecar/` — `events.rs` (serde types for runner.mjs JSONL events), `payload.rs` (base64 payload for argv[2]), `process.rs` (`tokio::process::Command` + stdin/stdout pumps), `mod.rs` (public `spawn`/`SpawnedSidecar`/`FollowUp`).
-- `platform/macos.rs` — NSPanel wrapping via `objc2` + `objc2-app-kit`: activation policy, style mask, window level, collection behavior, `dispatch_async_f` main-thread hop.
-- `ui/` — iced widgets: `theme.rs`, `command_input.rs`, `skill_list.rs`, `session_list.rs`, `chat_panel.rs`, `tool_line.rs`, `settings.rs`.
+- `platform/` — `macos.rs` for NSPanel wrapping via `objc2` + `objc2-app-kit` (activation policy, style mask, window level, collection behavior, `dispatch_async_f` main-thread hop); `stub.rs` for non-macOS builds.
+- `ui/` — iced widgets: `theme.rs`, `command_input.rs`, `skill_list.rs`, `idle_list.rs`, `chat_panel.rs`, `tool_line.rs`, `settings.rs`.
 
 ## State machine (ported from usePalette.ts)
 
