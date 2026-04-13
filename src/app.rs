@@ -311,8 +311,14 @@ pub struct Launchpad {
 
     pub recent_sessions: Vec<SessionInfo>,
     /// Unified selection index walking active chats first, then past
-    /// sessions — used for up/down nav in Mode::Idle with empty input.
+    /// sessions — used for up/down nav in Mode::Idle.
     pub selected_idle_index: usize,
+    /// Has the user moved into the idle list via ↑/↓? Controls whether
+    /// Enter with a non-empty input resumes the highlighted row (true)
+    /// or starts a new chat with the typed text (false). Always true
+    /// when the input is empty, so the historical empty-input Enter
+    /// behavior is preserved.
+    pub idle_selection_active: bool,
 
     pub settings: AppSettings,
     pub api_key_input: String,
@@ -390,6 +396,7 @@ impl Launchpad {
             spinner_frame: 0,
             recent_sessions: Vec::new(),
             selected_idle_index: 0,
+            idle_selection_active: true,
             api_key_input: crate::secrets::get_api_key().unwrap_or_default(),
             settings,
             api_key_visible: false,
@@ -580,9 +587,19 @@ impl Launchpad {
                     };
                     self.mode = Mode::Skills;
                     self.selected_skill_index = 0;
-                } else if self.mode == Mode::Skills {
-                    self.mode = Mode::Idle;
-                    self.filtered_skills.clear();
+                } else {
+                    if self.mode == Mode::Skills {
+                        self.mode = Mode::Idle;
+                        self.filtered_skills.clear();
+                    }
+                    // Fuzzy-filtering the idle list in place. Empty
+                    // input → selection active (Enter resumes top
+                    // row, matching the original behavior). Typed
+                    // input → selection *not* active, so Enter
+                    // starts a new chat with the typed text unless
+                    // the user arrow-keys into the filtered list.
+                    self.selected_idle_index = 0;
+                    self.idle_selection_active = self.input.is_empty();
                 }
                 self.resize_task()
             }
@@ -608,6 +625,10 @@ impl Launchpad {
                     self.mode = Mode::Idle;
                     self.filtered_skills.clear();
                 }
+                // Back to an empty-input idle state: re-engage the
+                // idle selection so Enter resumes the top row.
+                self.selected_idle_index = 0;
+                self.idle_selection_active = true;
                 // Skip the resize in Chatting mode — the follow-up draft
                 // clearing doesn't change `target_height`, so calling
                 // `resize` would just trigger a redundant redraw.
@@ -662,14 +683,23 @@ impl Launchpad {
                             self.filtered_skills.len(),
                         )
                     }
-                    Mode::Idle if self.input.is_empty() && self.idle_row_count() > 0 => {
-                        if self.selected_idle_index > 0 {
+                    Mode::Idle if !self.input.starts_with('/') && self.idle_row_count() > 0 => {
+                        let count = self.idle_row_count();
+                        // First arrow press while typing engages the
+                        // selection without moving it (lands on row 0).
+                        if !self.idle_selection_active {
+                            self.idle_selection_active = true;
+                            self.selected_idle_index = 0;
+                        } else if self.selected_idle_index > 0 {
                             self.selected_idle_index -= 1;
+                        }
+                        if self.selected_idle_index >= count {
+                            self.selected_idle_index = count.saturating_sub(1);
                         }
                         snap_to_selection(
                             IDLE_LIST_SCROLL_ID.clone(),
                             self.selected_idle_index,
-                            self.idle_row_count(),
+                            count,
                         )
                     }
                     Mode::Chatting => self.chat_scroll_by(-CHAT_SCROLL_STEP),
@@ -690,15 +720,24 @@ impl Launchpad {
                             self.filtered_skills.len(),
                         )
                     }
-                    Mode::Idle if self.input.is_empty() && self.idle_row_count() > 0 => {
-                        let max = self.idle_row_count().saturating_sub(1);
-                        if self.selected_idle_index < max {
+                    Mode::Idle if !self.input.starts_with('/') && self.idle_row_count() > 0 => {
+                        let count = self.idle_row_count();
+                        let max = count.saturating_sub(1);
+                        // First arrow press while typing engages the
+                        // selection without moving it (lands on row 0).
+                        if !self.idle_selection_active {
+                            self.idle_selection_active = true;
+                            self.selected_idle_index = 0;
+                        } else if self.selected_idle_index < max {
                             self.selected_idle_index += 1;
+                        }
+                        if self.selected_idle_index > max {
+                            self.selected_idle_index = max;
                         }
                         snap_to_selection(
                             IDLE_LIST_SCROLL_ID.clone(),
                             self.selected_idle_index,
-                            self.idle_row_count(),
+                            count,
                         )
                     }
                     Mode::Chatting => self.chat_scroll_by(CHAT_SCROLL_STEP),
@@ -713,10 +752,10 @@ impl Launchpad {
 
             Message::SelectSession(session_index) => {
                 // `session_index` is an index into the *past sessions*
-                // portion of the idle list (after filtering out dupes
-                // of active chats). The caller already passes the
-                // correct filtered index from the view builder.
-                let past = self.past_session_rows();
+                // portion of the idle list (post fuzzy-filter + dupe
+                // removal). The caller already passes the correct
+                // filtered index from the view builder.
+                let past = self.visible_past_session_rows();
                 if let Some(session) = past.get(session_index).cloned() {
                     self.resume_session(session)
                 } else {
@@ -1110,28 +1149,32 @@ impl Launchpad {
                     SKILL_LIST_SCROLL_ID.clone(),
                 ));
             }
-            Mode::Idle if self.input.is_empty() && self.idle_row_count() > 0 => {
-                // Build view-layer rows that borrow from `self`. Past
-                // sessions are filtered to exclude session_ids already
-                // represented by an active chat.
-                let active_session_ids: std::collections::HashSet<&str> = self
-                    .chats
-                    .values()
-                    .filter_map(|c| c.state.session_id.as_deref())
-                    .collect();
+            Mode::Idle if !self.input.starts_with('/') && self.idle_row_count() > 0 => {
+                // Build view-layer rows that borrow from `self`. Both
+                // active chats and past sessions are passed through the
+                // live fuzzy filter (idle_filter_query); past sessions
+                // also exclude any session_id already represented by an
+                // active chat.
+                let visible_chat_ids = self.visible_active_chat_ids();
+                let visible_past = self.visible_past_session_rows();
                 let mut rows: Vec<ui::idle_list::IdleRow<'_>> =
-                    Vec::with_capacity(self.idle_row_count());
-                for entry in self.chats.values() {
-                    rows.push(ui::idle_list::IdleRow::Active(entry));
-                }
-                for session in &self.recent_sessions {
-                    if !active_session_ids.contains(session.session_id.as_str()) {
-                        rows.push(ui::idle_list::IdleRow::Past(session));
+                    Vec::with_capacity(visible_chat_ids.len() + visible_past.len());
+                for id in &visible_chat_ids {
+                    if let Some(entry) = self.chats.get(id) {
+                        rows.push(ui::idle_list::IdleRow::Active(entry));
                     }
                 }
+                for session in visible_past {
+                    rows.push(ui::idle_list::IdleRow::Past(session));
+                }
+                let selected = if self.idle_selection_active {
+                    self.selected_idle_index
+                } else {
+                    usize::MAX
+                };
                 stack = stack.push(ui::idle_list::view(
-                    &rows,
-                    self.selected_idle_index,
+                    rows,
+                    selected,
                     self.spinner_frame,
                     IDLE_LIST_SCROLL_ID.clone(),
                 ));
@@ -1154,7 +1197,7 @@ impl Launchpad {
             self.mode,
             ui::keyhints::KeyhintContext {
                 has_rows: self.idle_row_count() > 0,
-                input_empty: self.input.is_empty(),
+                selection_active: self.idle_selection_active,
                 has_session_id: self
                     .active_chat()
                     .and_then(|e| e.state.session_id.as_deref())
@@ -1196,9 +1239,13 @@ impl Launchpad {
                     Task::none()
                 }
             }
-            Mode::Idle if self.input.is_empty() && self.idle_row_count() > 0 => {
+            Mode::Idle if self.idle_selection_active && self.idle_row_count() > 0 => {
                 // Dispatch based on which row is selected in the
-                // unified (active chats + past sessions) list.
+                // unified (active chats + past sessions) list. The
+                // typed input (if any) is discarded — the user opted
+                // into a resume by arrow-keying onto a row. To start
+                // a new chat with the typed text, press Enter without
+                // arrow-keying first.
                 let rows = self.build_idle_rows();
                 match rows.get(self.selected_idle_index) {
                     Some(IdleRowSelection::Active(chat_id)) => {
@@ -1530,9 +1577,10 @@ impl Launchpad {
 
     /// How many rows the idle list currently contains — active chats
     /// first, then past sessions that aren't dupes of an active chat's
-    /// session_id. Used by nav bounds and resize sizing.
+    /// session_id. Respects the live fuzzy filter on `self.input`. Used
+    /// by nav bounds and resize sizing.
     fn idle_row_count(&self) -> usize {
-        self.chats.len() + self.past_session_rows().len()
+        self.visible_active_chat_ids().len() + self.visible_past_session_rows().len()
     }
 
     /// Past sessions filtered to exclude any already represented as an
@@ -1552,17 +1600,59 @@ impl Launchpad {
             .collect()
     }
 
+    /// The current fuzzy-filter query for the idle list. Empty string
+    /// when the input is empty, `/`-prefixed (skills mode), or we're
+    /// not in Idle. Callers pass this into `filter_sessions` and the
+    /// chat-title filter so filtering is a no-op outside Idle.
+    fn idle_filter_query(&self) -> &str {
+        if self.mode == Mode::Idle && !self.input.starts_with('/') {
+            self.input.trim()
+        } else {
+            ""
+        }
+    }
+
+    /// Past sessions visible in the idle list, after the fuzzy filter.
+    /// Falls back to `past_session_rows()` when the filter query is
+    /// empty.
+    fn visible_past_session_rows(&self) -> Vec<SessionInfo> {
+        let all = self.past_session_rows();
+        let q = self.idle_filter_query();
+        if q.is_empty() {
+            all
+        } else {
+            crate::fuzzy::filter_sessions(&all, q)
+        }
+    }
+
+    /// Active chat ids visible in the idle list, after the fuzzy
+    /// filter. Ranked by title-match score when the filter is active;
+    /// otherwise returned in BTreeMap (id) order.
+    fn visible_active_chat_ids(&self) -> Vec<ChatId> {
+        let q = self.idle_filter_query();
+        if q.is_empty() {
+            return self.chats.keys().copied().collect();
+        }
+        let mut scored: Vec<(u32, ChatId)> = Vec::new();
+        for (&id, entry) in self.chats.iter() {
+            if let Some(score) = crate::fuzzy::fuzzy_score(&entry.state.title, q) {
+                scored.push((score, id));
+            }
+        }
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.into_iter().map(|(_, id)| id).collect()
+    }
+
     /// Build the unified idle-list selection list. Used by
     /// `handle_submit` to map `selected_idle_index` to either a
     /// ChatId or a past SessionInfo. The analogous `build_idle_rows`
     /// produces the view-layer rows with references.
     fn build_idle_rows(&self) -> Vec<IdleRowSelection> {
         let mut rows: Vec<IdleRowSelection> = Vec::with_capacity(self.idle_row_count());
-        // Active chats first, in insertion order (BTreeMap iterates by id).
-        for (&id, _) in self.chats.iter() {
+        for id in self.visible_active_chat_ids() {
             rows.push(IdleRowSelection::Active(id));
         }
-        for session in self.past_session_rows() {
+        for session in self.visible_past_session_rows() {
             rows.push(IdleRowSelection::Past(session));
         }
         rows
@@ -1606,7 +1696,7 @@ impl Launchpad {
                 BASE + (n * ROW).min(MAX_LIST) + keyhints
             }
             Mode::Idle => {
-                if self.input.is_empty() && self.idle_row_count() > 0 {
+                if !self.input.starts_with('/') && self.idle_row_count() > 0 {
                     let n = self.idle_row_count().max(1) as f32;
                     BASE + (n * ROW).min(MAX_LIST) + keyhints
                 } else {

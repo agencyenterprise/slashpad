@@ -14,12 +14,14 @@ use crate::state::{ChatStatus, SessionInfo};
 pub enum IdleRow<'a> {
     /// A chat running (or completed) in this process.
     Active(&'a ChatEntry),
-    /// A session loaded from disk that isn't also open as an active chat.
-    Past(&'a SessionInfo),
+    /// A session loaded from disk that isn't also open as an active
+    /// chat. Owned because the caller builds a fuzzy-filtered Vec —
+    /// borrowing from that Vec's lifetime would escape the view fn.
+    Past(SessionInfo),
 }
 
 pub fn view<'a>(
-    rows: &[IdleRow<'a>],
+    rows: Vec<IdleRow<'a>>,
     selected: usize,
     spinner_frame: u32,
     scroll_id: scrollable::Id,
@@ -33,7 +35,7 @@ pub fn view<'a>(
     let mut past_index: usize = 0;
     let last = rows.len().saturating_sub(1);
 
-    for (i, row_item) in rows.iter().enumerate() {
+    for (i, row_item) in rows.into_iter().enumerate() {
         let is_selected = i == selected;
         let is_first = i == 0;
         let is_last = i == last;

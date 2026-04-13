@@ -17,12 +17,14 @@ use super::theme;
 /// on purpose — we don't want this view borrowing `&App`.
 #[derive(Debug, Clone, Copy)]
 pub struct KeyhintContext {
-    /// True when the Idle list has at least one row (active chats or
-    /// past sessions) to open.
+    /// True when the Idle list has at least one visible row (active
+    /// chats or past sessions, after the live fuzzy filter).
     pub has_rows: bool,
-    /// True when the input is empty — drives the "/" skills hint and
-    /// picks between "Open" vs. "Send" in Idle.
-    pub input_empty: bool,
+    /// True when an idle-list row is currently highlighted — either
+    /// because the input is empty (default selection) or because the
+    /// user arrow-keyed into the filtered list. Drives the "Open" vs
+    /// "Send" hint label on Enter.
+    pub selection_active: bool,
     /// True when the active Chatting chat has a `session_id` populated
     /// (i.e., the sidecar has streamed at least one response). Gates
     /// the "⌘T Terminal" hint so it only shows when Cmd+T would
@@ -40,8 +42,14 @@ pub const BAR_HEIGHT: f32 = 40.0;
 
 pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
     let hints: Vec<(&'static str, &'static str)> = match mode {
-        Mode::Idle if ctx.input_empty && ctx.has_rows => vec![
+        Mode::Idle if ctx.selection_active && ctx.has_rows => vec![
             ("↵", "Open"),
+            ("↑↓", "Navigate"),
+            ("/", "Skills"),
+            ("esc", "Dismiss"),
+        ],
+        Mode::Idle if ctx.has_rows => vec![
+            ("↵", "Send"),
             ("↑↓", "Navigate"),
             ("/", "Skills"),
             ("esc", "Dismiss"),
