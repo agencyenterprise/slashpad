@@ -30,10 +30,11 @@ pub fn view(
                 .size(13)
                 .color(super::theme::ACCENT)
                 .width(Length::Fixed(120.0)),
-            text(truncate(&skill.description, 90))
+            text(truncate(&skill.description, 180))
                 .size(12)
                 .color(super::theme::MUTED)
-                .wrapping(iced::widget::text::Wrapping::None),
+                .height(Length::Fixed(32.0))
+                .wrapping(iced::widget::text::Wrapping::Word),
         ]
         .spacing(12)
         .align_y(iced::Alignment::Center);
