@@ -1,9 +1,10 @@
 //! Settings panel — API key + hotkey display.
 
-use iced::widget::{button, checkbox, column, container, row, text, text_input, Column};
+use iced::widget::{button, checkbox, column, container, pick_list, row, text, text_input, Column};
 use iced::{Element, Length};
 
 use crate::app::Message;
+use crate::settings::PreferredTerminal;
 
 pub fn view<'a>(
     api_key_input: &'a str,
@@ -12,6 +13,7 @@ pub fn view<'a>(
     current_hotkey: &'a str,
     recording: bool,
     hotkey_error: Option<&'a str>,
+    preferred_terminal: PreferredTerminal,
 ) -> Element<'a, Message> {
     let header = row![
         text("Settings").size(13).color(super::theme::TEXT),
@@ -207,6 +209,31 @@ pub fn view<'a>(
         hotkey_row = hotkey_row.push(text(err.to_string()).size(11).color(super::theme::DANGER));
     }
 
+    let terminal_picker = pick_list(
+        &PreferredTerminal::ALL[..],
+        Some(preferred_terminal),
+        Message::PreferredTerminalChanged,
+    )
+    .text_size(13)
+    .padding([8, 14])
+    .style(|_theme: &iced::Theme, _status| iced::widget::pick_list::Style {
+        text_color: super::theme::TEXT,
+        placeholder_color: super::theme::MUTED,
+        handle_color: super::theme::MUTED,
+        background: iced::Background::Color(super::theme::SURFACE_2),
+        border: iced::Border {
+            color: super::theme::SURFACE_3,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+    });
+
+    let terminal_row = column![
+        text("Preferred Terminal").size(11).color(super::theme::MUTED),
+        terminal_picker,
+    ]
+    .spacing(6);
+
     let actions = row![
         button(text("Show Launcher").size(12).color(super::theme::TEXT))
             .on_press(Message::HotkeyPressed)
@@ -238,7 +265,7 @@ pub fn view<'a>(
     ]
     .spacing(8);
 
-    let body = column![header, api_row, hotkey_row, actions]
+    let body = column![header, api_row, hotkey_row, terminal_row, actions]
         .spacing(14)
         .padding(16);
 

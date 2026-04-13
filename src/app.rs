@@ -56,7 +56,7 @@ const CHAT_SCROLL_STEP: f32 = 60.0;
 use tokio::sync::mpsc;
 
 use crate::hotkey;
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, PreferredTerminal};
 use crate::sidecar::{self, FollowUp, Payload, SidecarEvent, SpawnedSidecar};
 use crate::skills;
 use crate::state::{
@@ -255,6 +255,13 @@ pub enum Message {
     /// scroll away from the bottom, (b) re-engage it when they scroll
     /// back, and (c) compute clamped absolute offsets for Up/Down keys.
     ChatScrolled(scrollable::Viewport),
+    /// Cmd+T pressed while in `Mode::Chatting` — open the active chat's
+    /// session in the user's preferred terminal via `claude --resume`.
+    /// Silently no-ops if not in Chatting mode or if the active chat
+    /// has no `session_id` yet (first response hasn't arrived).
+    OpenSessionInTerminal,
+    /// The user picked a new terminal from the settings dropdown.
+    PreferredTerminalChanged(PreferredTerminal),
 }
 
 /// Root application state.
@@ -465,18 +472,27 @@ impl Launchpad {
                 Key::Named(Named::Enter) => Some(Message::Submit),
                 _ => None,
             }),
-            // Escape must use listen_with (not on_key_press) because iced's
-            // text_input widget captures Escape when focused — it clears its
-            // own focus and returns Status::Captured, which hides the event
-            // from on_key_press. listen_with receives events regardless of
-            // capture status, so we see the first press.
+            // Escape and Cmd+T both need listen_with (not on_key_press)
+            // because iced's text_input captures character keys and
+            // Escape when focused and returns Status::Captured — which
+            // hides them from on_key_press. listen_with receives events
+            // regardless of capture status, so we see the first press.
             iced::event::listen_with(|event, _status, window_id| match event {
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                    key, ..
-                }) => match key.as_ref() {
-                    Key::Named(Named::Escape) => Some(Message::EscapePressed),
-                    _ => None,
-                },
+                    key,
+                    modifiers,
+                    ..
+                }) => {
+                    if modifiers.command()
+                        && matches!(key.as_ref(), Key::Character("t"))
+                    {
+                        return Some(Message::OpenSessionInTerminal);
+                    }
+                    match key.as_ref() {
+                        Key::Named(Named::Escape) => Some(Message::EscapePressed),
+                        _ => None,
+                    }
+                }
                 iced::Event::Window(iced::window::Event::Unfocused) => {
                     Some(Message::WindowBlurred(window_id))
                 }
@@ -868,6 +884,59 @@ impl Launchpad {
                 Task::none()
             }
 
+            Message::OpenSessionInTerminal => {
+                // Only meaningful from the chat view. Fire in Idle /
+                // Skills / Settings is a silent no-op so the shortcut
+                // feels dead outside its scope rather than doing
+                // something surprising.
+                if self.mode != Mode::Chatting {
+                    return Task::none();
+                }
+                let session_id = match self
+                    .active_chat()
+                    .and_then(|e| e.state.session_id.clone())
+                {
+                    Some(id) => id,
+                    None => {
+                        // First turn hasn't completed yet — the
+                        // sidecar assigns a session id with its first
+                        // response. Keyhint is suppressed in this
+                        // case too, so this branch is mostly defense
+                        // against a racey keypress.
+                        eprintln!(
+                            "[launchpad] Cmd+T ignored: active chat has no session_id yet"
+                        );
+                        return Task::none();
+                    }
+                };
+                let cwd = match sidecar::launchpad_home() {
+                    Ok(p) => p.to_string_lossy().into_owned(),
+                    Err(e) => {
+                        eprintln!("[launchpad] Cmd+T failed: could not resolve ~/.launchpad: {e}");
+                        return Task::none();
+                    }
+                };
+                if let Err(e) = crate::terminal::open_claude_resume(
+                    self.settings.preferred_terminal,
+                    &cwd,
+                    &session_id,
+                ) {
+                    eprintln!(
+                        "[launchpad] failed to open session {session_id} in {:?}: {e}",
+                        self.settings.preferred_terminal
+                    );
+                }
+                Task::none()
+            }
+
+            Message::PreferredTerminalChanged(term) => {
+                self.settings.preferred_terminal = term;
+                if let Err(e) = self.settings.save() {
+                    eprintln!("[launchpad] failed to save preferred terminal: {e}");
+                }
+                Task::none()
+            }
+
             Message::ChatScrolled(viewport) => {
                 // Record the new viewport geometry on the active chat and
                 // recompute `autoscroll`: on when the user is sitting at
@@ -929,6 +998,7 @@ impl Launchpad {
                 &self.settings.hotkey,
                 self.recording_hotkey,
                 self.hotkey_error.as_deref(),
+                self.settings.preferred_terminal,
             ))
             .padding(8)
             .width(iced::Length::Fill)
@@ -1001,6 +1071,10 @@ impl Launchpad {
             ui::keyhints::KeyhintContext {
                 has_rows: self.idle_row_count() > 0,
                 input_empty: self.input.is_empty(),
+                has_session_id: self
+                    .active_chat()
+                    .and_then(|e| e.state.session_id.as_deref())
+                    .is_some(),
             },
         ));
 

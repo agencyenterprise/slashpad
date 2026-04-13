@@ -9,6 +9,7 @@ mod settings;
 mod sidecar;
 mod skills;
 mod state;
+mod terminal;
 mod tray;
 mod ui;
 

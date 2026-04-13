@@ -23,6 +23,11 @@ pub struct KeyhintContext {
     /// True when the input is empty — drives the "/" skills hint and
     /// picks between "Open" vs. "Send" in Idle.
     pub input_empty: bool,
+    /// True when the active Chatting chat has a `session_id` populated
+    /// (i.e., the sidecar has streamed at least one response). Gates
+    /// the "⌘T Terminal" hint so it only shows when Cmd+T would
+    /// actually resolve to a resumable session.
+    pub has_session_id: bool,
 }
 
 /// Fixed footer height reserved for the keyhints bar, used by
@@ -43,6 +48,9 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         ],
         Mode::Idle => vec![("↵", "Send"), ("/", "Skills"), ("esc", "Dismiss")],
         Mode::Skills => vec![("↵", "Run"), ("↑↓", "Navigate"), ("esc", "Dismiss")],
+        Mode::Chatting if ctx.has_session_id => {
+            vec![("↵", "Send"), ("⌘T", "Terminal"), ("esc", "Back")]
+        }
         Mode::Chatting => vec![("↵", "Send"), ("esc", "Back")],
         Mode::Settings => vec![],
     };
