@@ -1595,22 +1595,14 @@ impl Launchpad {
 
     fn show_palette(&mut self) -> Task<Message> {
         self.palette_visible = true;
-        // When no chats exist, keep the pre-multi-chat behavior of
-        // opening directly into the skills picker with "/" prefilled —
-        // users who never leave a chat running see zero regression.
-        // With chats present (running, completed, resumed-from-disk),
-        // land in Idle with an empty input so the unified list of
-        // active chats + past sessions is visible.
-        if self.chats.is_empty() {
-            self.mode = Mode::Skills;
-            self.input = "/".to_string();
-            self.filtered_skills = self.all_skills.clone();
-            self.selected_skill_index = 0;
-        } else {
-            self.mode = Mode::Idle;
-            self.input.clear();
-            self.selected_idle_index = 0;
-        }
+        // Always open into the skills picker with "/" prefilled. Users
+        // reach the unified Idle list (active chats + past sessions) by
+        // backspacing the "/" away — `Message::InputChanged` flips the
+        // mode to Idle automatically when the leading "/" is removed.
+        self.mode = Mode::Skills;
+        self.input = "/".to_string();
+        self.filtered_skills = self.all_skills.clone();
+        self.selected_skill_index = 0;
         // Never clear `self.chats` or `self.active_chat_id` — those
         // carry the state the user expects to come back to.
 
