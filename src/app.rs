@@ -397,9 +397,16 @@ impl Launchpad {
             Subscription::run(external_subscription_stream),
             // ArrowUp/Down propagate normally through text_input (it returns
             // Status::Ignored for them), so on_key_press is fine here.
+            //
+            // Enter is captured by text_input when it's focused (it fires
+            // on_submit there), so this global handler only runs when
+            // focus has escaped the input — e.g., after mouse-wheel
+            // scrolling over the idle list. Without this, Enter would
+            // silently do nothing in that state.
             iced::keyboard::on_key_press(|key, _modifiers| match key.as_ref() {
                 Key::Named(Named::ArrowUp) => Some(Message::NavUp),
                 Key::Named(Named::ArrowDown) => Some(Message::NavDown),
+                Key::Named(Named::Enter) => Some(Message::Submit),
                 _ => None,
             }),
             // Escape must use listen_with (not on_key_press) because iced's

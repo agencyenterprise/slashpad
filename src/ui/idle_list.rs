@@ -112,7 +112,7 @@ pub fn view<'a>(
             .direction(super::theme::scrollbar_direction())
             .style(super::theme::scrollbar_style),
     )
-        .padding(0)
+        .padding([4, 0])
         .width(Length::Fill)
         .max_height(260.0)
         .style(|_theme: &iced::Theme| iced::widget::container::Style {
