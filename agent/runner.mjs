@@ -16,7 +16,7 @@ const mode = payload.mode || "chat";
 if (mode === "list") {
   try {
     const all = await listSessions({ dir: payload.cwd || process.env.HOME });
-    const sessions = all.slice(0, 20);
+    const sessions = all.slice(0, 50);
     for (const s of sessions) {
       emit({
         type: "session",
