@@ -122,12 +122,11 @@ impl fmt::Display for PreferredTerminal {
 pub struct AppSettings {
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
-    #[serde(default, rename = "apiKey")]
-    pub api_key: Option<String>,
     /// When true, the sidecar runs without a forwarded API key and
     /// falls back to the user's `claude login` session. When false,
-    /// `api_key` is forwarded to the Agent SDK. Defaults to true so a
-    /// fresh install uses the subscription out of the box.
+    /// the API key stored in the OS keychain (see `secrets` module)
+    /// is forwarded to the Agent SDK. Defaults to true so a fresh
+    /// install uses the subscription out of the box.
     #[serde(default = "default_true", rename = "useSubscription")]
     pub use_subscription: bool,
     /// Terminal emulator used when the user presses Cmd+T from a chat
@@ -149,7 +148,6 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             hotkey: DEFAULT_HOTKEY.to_string(),
-            api_key: None,
             use_subscription: true,
             preferred_terminal: PreferredTerminal::default(),
         }
@@ -171,6 +169,11 @@ impl AppSettings {
     /// runs use the same choice without re-detecting. After that, a
     /// user's explicit pick from the Settings dropdown is never
     /// overridden (the key is present, so detection doesn't fire).
+    ///
+    /// Also scrubs any legacy plaintext `apiKey` left over from
+    /// earlier versions: if that key is present in the raw JSON we
+    /// rewrite the file without it. Users re-enter the key once and
+    /// it's persisted to the OS keychain via the `secrets` module.
     pub fn load_or_default() -> Self {
         let path = settings_path();
         let raw = match std::fs::read_to_string(&path) {
@@ -183,6 +186,11 @@ impl AppSettings {
             .and_then(|v| v.get("preferredTerminal"))
             .is_some();
 
+        let had_legacy_api_key = raw
+            .as_ref()
+            .and_then(|v| v.get("apiKey"))
+            .is_some();
+
         let mut settings: Self = raw
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
@@ -191,6 +199,16 @@ impl AppSettings {
             settings.preferred_terminal = PreferredTerminal::detect();
             if let Err(e) = settings.save() {
                 eprintln!("[launchpad] failed to persist detected terminal: {e}");
+            }
+        }
+
+        if had_legacy_api_key {
+            // AppSettings no longer carries `apiKey`, so serializing
+            // over the file drops the plaintext key. We intentionally
+            // do NOT migrate it into the keychain — the user re-enters
+            // it through the Settings UI.
+            if let Err(e) = settings.save() {
+                eprintln!("[launchpad] failed to scrub legacy apiKey: {e}");
             }
         }
 

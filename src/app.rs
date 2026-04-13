@@ -378,7 +378,7 @@ impl Launchpad {
             spinner_frame: 0,
             recent_sessions: Vec::new(),
             selected_idle_index: 0,
-            api_key_input: settings.api_key.clone().unwrap_or_default(),
+            api_key_input: crate::secrets::get_api_key().unwrap_or_default(),
             settings,
             api_key_visible: false,
             recording_hotkey: false,
@@ -787,12 +787,18 @@ impl Launchpad {
                 // it verbatim. Any sk-ant- prefix validation happens
                 // in the sidecar at run-time — the settings panel
                 // shouldn't silently drop input that doesn't match.
-                self.settings.api_key = if self.api_key_input.is_empty() {
-                    None
+                //
+                // Storage is the OS keychain (see `secrets` module),
+                // not settings.json — the key is never written to
+                // disk in plaintext.
+                let result = if self.api_key_input.is_empty() {
+                    crate::secrets::delete_api_key()
                 } else {
-                    Some(self.api_key_input.clone())
+                    crate::secrets::set_api_key(&self.api_key_input)
                 };
-                let _ = self.settings.save();
+                if let Err(e) = result {
+                    eprintln!("[launchpad] failed to persist api key: {e}");
+                }
                 Task::none()
             }
 
@@ -803,8 +809,9 @@ impl Launchpad {
 
             Message::ClearApiKey => {
                 self.api_key_input.clear();
-                self.settings.api_key = None;
-                let _ = self.settings.save();
+                if let Err(e) = crate::secrets::delete_api_key() {
+                    eprintln!("[launchpad] failed to clear api key: {e}");
+                }
                 self.api_key_visible = false;
                 Task::none()
             }
@@ -1334,11 +1341,11 @@ impl Launchpad {
         let home = sidecar::launchpad_home()?;
         // Subscription mode: don't forward a key, let the Agent SDK
         // fall back to the user's `claude login` session. API-key
-        // mode: forward whatever is saved.
+        // mode: forward whatever is saved in the OS keychain.
         let api_key = if self.settings.use_subscription {
             None
         } else {
-            self.settings.api_key.clone()
+            crate::secrets::get_api_key()
         };
         let payload = Payload::chat(
             prompt,
@@ -1638,11 +1645,12 @@ impl Launchpad {
         }
 
         // Each fresh open starts masked and re-synced with whatever is
-        // actually on disk (covers the case where the user saved, closed,
-        // and came back — we want the saved key visible as bullets, not
-        // whatever stale string is still in the input field).
+        // actually stored in the keychain (covers the case where the
+        // user saved, closed, and came back — we want the saved key
+        // visible as bullets, not whatever stale string is still in
+        // the input field).
         self.api_key_visible = false;
-        self.api_key_input = self.settings.api_key.clone().unwrap_or_default();
+        self.api_key_input = crate::secrets::get_api_key().unwrap_or_default();
 
         let settings_w = 340.0_f64;
         let x = (tray_x + tray_w / 2.0 - settings_w / 2.0) as f32;
