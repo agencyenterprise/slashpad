@@ -12,10 +12,20 @@ pub struct AppSettings {
     pub hotkey: String,
     #[serde(default, rename = "apiKey")]
     pub api_key: Option<String>,
+    /// When true, the sidecar runs without a forwarded API key and
+    /// falls back to the user's `claude login` session. When false,
+    /// `api_key` is forwarded to the Agent SDK. Defaults to true so a
+    /// fresh install uses the subscription out of the box.
+    #[serde(default = "default_true", rename = "useSubscription")]
+    pub use_subscription: bool,
 }
 
 fn default_hotkey() -> String {
     DEFAULT_HOTKEY.to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -23,6 +33,7 @@ impl Default for AppSettings {
         Self {
             hotkey: DEFAULT_HOTKEY.to_string(),
             api_key: None,
+            use_subscription: true,
         }
     }
 }

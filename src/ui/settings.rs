@@ -1,12 +1,14 @@
 //! Settings panel — API key + hotkey display.
 
-use iced::widget::{button, column, container, row, text, text_input};
+use iced::widget::{button, checkbox, column, container, row, text, text_input, Column};
 use iced::{Element, Length};
 
 use crate::app::Message;
 
 pub fn view<'a>(
     api_key_input: &'a str,
+    api_key_visible: bool,
+    use_subscription: bool,
     current_hotkey: &'a str,
     recording: bool,
     hotkey_error: Option<&'a str>,
@@ -25,36 +27,145 @@ pub fn view<'a>(
     ]
     .align_y(iced::Alignment::Center);
 
-    let api_row = column![
-        text("Anthropic API Key")
-            .size(11)
-            .color(super::theme::MUTED),
-        row![
-            text_input("sk-ant-...", api_key_input)
-                .on_input(Message::ApiKeyInputChanged)
-                .padding(8)
-                .size(13)
-                .width(Length::Fill),
-            button(text("Save").size(12).color(super::theme::SURFACE_0))
-                .on_press(Message::SaveApiKey)
-                .padding([8, 14])
-                .style(|_, _| iced::widget::button::Style {
-                    background: Some(iced::Background::Color(super::theme::ACCENT)),
-                    text_color: super::theme::SURFACE_0,
+    // Inner text_input: transparent so it adopts the surrounding
+    // container's background, themed to match the rest of the app.
+    let input = text_input("sk-ant-...", api_key_input)
+        .on_input(Message::ApiKeyInputChanged)
+        .secure(!api_key_visible)
+        .padding(8)
+        .size(13)
+        .width(Length::Fill)
+        .style(|_theme: &iced::Theme, _status| iced::widget::text_input::Style {
+            background: iced::Background::Color(iced::Color::TRANSPARENT),
+            border: iced::Border {
+                color: iced::Color::TRANSPARENT,
+                width: 0.0,
+                radius: 0.0.into(),
+            },
+            icon: super::theme::MUTED,
+            placeholder: super::theme::MUTED,
+            value: super::theme::TEXT,
+            selection: iced::Color {
+                a: 0.35,
+                ..super::theme::ACCENT
+            },
+        });
+
+    let toggle_label = if api_key_visible { "Hide" } else { "Show" };
+    let toggle_btn = button(text(toggle_label).size(11).color(super::theme::MUTED))
+        .on_press(Message::ToggleApiKeyVisibility)
+        .padding([4, 8])
+        .style(|_, status| {
+            let text_color = match status {
+                iced::widget::button::Status::Hovered => super::theme::TEXT,
+                _ => super::theme::MUTED,
+            };
+            iced::widget::button::Style {
+                background: None,
+                text_color,
+                border: iced::Border {
+                    color: iced::Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            }
+        });
+
+    // Build the inline controls row. The clear (×) button only shows up
+    // when there is something to clear.
+    let mut inner = row![input, toggle_btn]
+        .spacing(2)
+        .align_y(iced::Alignment::Center);
+    if !api_key_input.is_empty() {
+        let clear_btn = button(text("×").size(14).color(super::theme::MUTED))
+            .on_press(Message::ClearApiKey)
+            .padding([2, 8])
+            .style(|_, status| {
+                let text_color = match status {
+                    iced::widget::button::Status::Hovered => super::theme::DANGER,
+                    _ => super::theme::MUTED,
+                };
+                iced::widget::button::Style {
+                    background: None,
+                    text_color,
                     border: iced::Border {
                         color: iced::Color::TRANSPARENT,
                         width: 0.0,
-                        radius: 8.0.into(),
+                        radius: 6.0.into(),
                     },
                     ..Default::default()
+                }
+            });
+        inner = inner.push(clear_btn);
+    }
+
+    // Wrap the input + side buttons in a bordered rounded container so
+    // the whole thing reads as one control.
+    let input_shell = container(inner)
+        .padding([0, 4])
+        .width(Length::Fill)
+        .style(|_theme: &iced::Theme| iced::widget::container::Style {
+            background: Some(iced::Background::Color(super::theme::SURFACE_2)),
+            border: iced::Border {
+                color: super::theme::SURFACE_3,
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            text_color: Some(super::theme::TEXT),
+            ..Default::default()
+        });
+
+    let subscription_checkbox = checkbox("Use Claude subscription", use_subscription)
+        .on_toggle(Message::UseSubscriptionToggled)
+        .size(14)
+        .text_size(13)
+        .spacing(8)
+        .style(|_theme: &iced::Theme, status| {
+            let checked = matches!(
+                status,
+                iced::widget::checkbox::Status::Active { is_checked: true }
+                    | iced::widget::checkbox::Status::Hovered { is_checked: true }
+                    | iced::widget::checkbox::Status::Disabled { is_checked: true }
+            );
+            iced::widget::checkbox::Style {
+                background: iced::Background::Color(if checked {
+                    super::theme::ACCENT
+                } else {
+                    super::theme::SURFACE_2
                 }),
-        ]
-        .spacing(8),
-        text("Or run `claude login` in your terminal")
-            .size(11)
-            .color(super::theme::MUTED),
-    ]
-    .spacing(6);
+                icon_color: super::theme::SURFACE_0,
+                border: iced::Border {
+                    color: if checked {
+                        super::theme::ACCENT
+                    } else {
+                        super::theme::SURFACE_3
+                    },
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                text_color: Some(super::theme::TEXT),
+            }
+        });
+
+    let mut api_row: Column<'_, Message> = column![subscription_checkbox].spacing(10);
+    if use_subscription {
+        api_row = api_row.push(
+            text("Authenticated via `claude login` in your terminal")
+                .size(11)
+                .color(super::theme::MUTED),
+        );
+    } else {
+        api_row = api_row.push(
+            column![
+                text("Anthropic API Key")
+                    .size(11)
+                    .color(super::theme::MUTED),
+                input_shell,
+            ]
+            .spacing(6),
+        );
+    }
 
     let hotkey_label_text = if recording {
         "Press a shortcut…".to_string()

@@ -161,7 +161,15 @@ pub enum Message {
     /// settings panel header).
     CloseSettings,
     ApiKeyInputChanged(String),
-    SaveApiKey,
+    /// Toggle the show/hide state of the API key input so the user can
+    /// verify what they pasted.
+    ToggleApiKeyVisibility,
+    /// Wipe the API key input and remove the saved key from settings.
+    ClearApiKey,
+    /// The "Use Claude subscription" checkbox was toggled. `true`
+    /// means route through `claude login` (no API key forwarded);
+    /// `false` reveals the API key input.
+    UseSubscriptionToggled(bool),
     /// Tray left-click → open a new settings window anchored below the
     /// tray icon at the given logical-pixel rect.
     TrayOpenSettings {
@@ -233,6 +241,10 @@ pub struct Launchpad {
 
     pub settings: AppSettings,
     pub api_key_input: String,
+    /// Whether the API key input is currently rendering in plaintext
+    /// (show/hide toggle in the settings panel). Always starts `false`
+    /// on each settings-window open.
+    pub api_key_visible: bool,
     pub recording_hotkey: bool,
     /// Last error surfaced from `hotkey::update_hotkey`, shown under the
     /// hotkey button in the settings window. Cleared when recording starts
@@ -303,8 +315,9 @@ impl Launchpad {
             spinner_frame: 0,
             recent_sessions: Vec::new(),
             selected_idle_index: 0,
+            api_key_input: settings.api_key.clone().unwrap_or_default(),
             settings,
-            api_key_input: String::new(),
+            api_key_visible: false,
             recording_hotkey: false,
             hotkey_error: None,
             palette_window_id: Some(palette_id),
@@ -675,13 +688,40 @@ impl Launchpad {
 
             Message::ApiKeyInputChanged(v) => {
                 self.api_key_input = v;
+                // Save-on-change: persist whatever is currently in the
+                // field. Empty clears the saved key; non-empty stores
+                // it verbatim. Any sk-ant- prefix validation happens
+                // in the sidecar at run-time — the settings panel
+                // shouldn't silently drop input that doesn't match.
+                self.settings.api_key = if self.api_key_input.is_empty() {
+                    None
+                } else {
+                    Some(self.api_key_input.clone())
+                };
+                let _ = self.settings.save();
                 Task::none()
             }
 
-            Message::SaveApiKey => {
-                if self.api_key_input.starts_with("sk-ant-") {
-                    self.settings.api_key = Some(self.api_key_input.clone());
-                    let _ = self.settings.save();
+            Message::ToggleApiKeyVisibility => {
+                self.api_key_visible = !self.api_key_visible;
+                Task::none()
+            }
+
+            Message::ClearApiKey => {
+                self.api_key_input.clear();
+                self.settings.api_key = None;
+                let _ = self.settings.save();
+                self.api_key_visible = false;
+                Task::none()
+            }
+
+            Message::UseSubscriptionToggled(enabled) => {
+                self.settings.use_subscription = enabled;
+                let _ = self.settings.save();
+                // Hide the key again whenever we flip modes so toggling
+                // off → on → off doesn't leak plaintext.
+                if enabled {
+                    self.api_key_visible = false;
                 }
                 Task::none()
             }
@@ -757,6 +797,8 @@ impl Launchpad {
         if Some(window_id) == self.settings_window_id {
             return container(ui::settings::view(
                 &self.api_key_input,
+                self.api_key_visible,
+                self.settings.use_subscription,
                 &self.settings.hotkey,
                 self.recording_hotkey,
                 self.hotkey_error.as_deref(),
@@ -1047,10 +1089,18 @@ impl Launchpad {
         resume: Option<String>,
     ) -> anyhow::Result<SpawnedSidecar> {
         let home = sidecar::launchpad_home()?;
+        // Subscription mode: don't forward a key, let the Agent SDK
+        // fall back to the user's `claude login` session. API-key
+        // mode: forward whatever is saved.
+        let api_key = if self.settings.use_subscription {
+            None
+        } else {
+            self.settings.api_key.clone()
+        };
         let payload = Payload::chat(
             prompt,
             home.to_string_lossy().to_string(),
-            self.settings.api_key.clone(),
+            api_key,
             resume,
         );
         let mut spawned = sidecar::spawn(payload)?;
@@ -1317,6 +1367,13 @@ impl Launchpad {
         if let Some(id) = self.settings_window_id {
             return iced::window::close(id);
         }
+
+        // Each fresh open starts masked and re-synced with whatever is
+        // actually on disk (covers the case where the user saved, closed,
+        // and came back — we want the saved key visible as bullets, not
+        // whatever stale string is still in the input field).
+        self.api_key_visible = false;
+        self.api_key_input = self.settings.api_key.clone().unwrap_or_default();
 
         let settings_w = 340.0_f64;
         let x = (tray_x + tray_w / 2.0 - settings_w / 2.0) as f32;
