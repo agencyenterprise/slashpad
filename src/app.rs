@@ -509,15 +509,17 @@ impl Launchpad {
                 if let Some(settings_id) = self.settings_window_id {
                     return iced::window::close(settings_id);
                 }
-                // Esc always dismisses the palette now. In Chatting mode
-                // it *preserves* the chat — the sidecar keeps streaming
-                // in the background and the entry stays in `self.chats`
-                // so the user can return to it via the idle list next
-                // time they summon the palette.
+                // In Chatting mode, Esc steps back to the idle thread
+                // list instead of dismissing. The sidecar keeps streaming
+                // in the background and the entry stays in `self.chats`,
+                // so the user can pick a different chat (or re-enter this
+                // one) from the list. A second Esc from the idle list
+                // dismisses the palette.
                 if self.mode == Mode::Chatting {
                     self.active_chat_id = None;
                     self.mode = Mode::Idle;
                     self.input.clear();
+                    return Task::none();
                 }
                 self.hide_palette()
             }
