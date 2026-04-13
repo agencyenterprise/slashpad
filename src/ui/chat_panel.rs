@@ -10,6 +10,7 @@ pub fn view<'a>(
     messages: &'a [ChatMessageView],
     is_agent_ready: bool,
     spinner_frame: u32,
+    scroll_id: scrollable::Id,
 ) -> Element<'a, Message> {
     let mut col: Column<'a, Message> = Column::new().spacing(12);
 
@@ -35,6 +36,8 @@ pub fn view<'a>(
 
     container(
         scrollable(container(col).padding([0, 14]))
+            .id(scroll_id)
+            .on_scroll(Message::ChatScrolled)
             .height(Length::Fill)
             .direction(super::theme::scrollbar_direction())
             .style(super::theme::scrollbar_style),

@@ -24,6 +24,12 @@ static SKILL_LIST_SCROLL_ID: LazyLock<scrollable::Id> =
     LazyLock::new(scrollable::Id::unique);
 static IDLE_LIST_SCROLL_ID: LazyLock<scrollable::Id> =
     LazyLock::new(scrollable::Id::unique);
+/// Stable scrollable id for the chat panel. Only one chat is visible at a
+/// time, so a single shared id is fine — it's how we target
+/// `scrollable::snap_to` / `scrollable::scroll_to` for autoscroll and
+/// keyboard scrolling.
+static CHAT_SCROLL_ID: LazyLock<scrollable::Id> =
+    LazyLock::new(scrollable::Id::unique);
 
 /// Snap a scrollable so the row at `index` (in a list of `count`) is visible.
 /// Uses a fractional offset: index 0 -> top, last index -> bottom.
@@ -35,6 +41,18 @@ fn snap_to_selection(id: scrollable::Id, index: usize, count: usize) -> Task<Mes
     };
     scrollable::snap_to(id, scrollable::RelativeOffset { x: 0.0, y })
 }
+
+/// Pin the chat scrollable to the bottom. Runs against the *next* laid-out
+/// frame, so it sees freshly appended content and lands at y=content_end.
+fn snap_chat_to_bottom() -> Task<Message> {
+    scrollable::snap_to(
+        CHAT_SCROLL_ID.clone(),
+        scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+    )
+}
+
+/// Pixels scrolled per Up/Down keypress while the chat panel is focused.
+const CHAT_SCROLL_STEP: f32 = 60.0;
 use tokio::sync::mpsc;
 
 use crate::hotkey;
@@ -52,6 +70,39 @@ use crate::ui;
 pub struct ChatEntry {
     pub state: ChatState,
     pub sidecar: Option<SpawnedSidecar>,
+    /// View-only scroll bookkeeping for the chat panel. Tracks whether the
+    /// user wants to pin to the bottom (autoscroll) and the last-known
+    /// scrollable geometry so keyboard scrolling can compute clamped
+    /// absolute offsets. Not persisted.
+    pub scroll: ChatScrollState,
+}
+
+/// View-only scroll state for a chat. `autoscroll` defaults to `true` so new
+/// chats / newly-opened chats pin to the bottom. The geometry fields are
+/// populated by the `ChatScrolled` handler as `on_scroll` fires.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChatScrollState {
+    pub autoscroll: bool,
+    pub offset: scrollable::AbsoluteOffset,
+    pub viewport_h: f32,
+    pub content_h: f32,
+}
+
+impl ChatScrollState {
+    fn new() -> Self {
+        Self {
+            autoscroll: true,
+            offset: scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+            viewport_h: 0.0,
+            content_h: 0.0,
+        }
+    }
+
+    /// Maximum vertical scroll offset given the last-known geometry. Zero
+    /// when content fits within the viewport.
+    fn max_y(&self) -> f32 {
+        (self.content_h - self.viewport_h).max(0.0)
+    }
 }
 
 /// Unified idle-list selection row used by `handle_submit` and nav.
@@ -199,6 +250,11 @@ pub enum Message {
     /// `iced::widget::markdown::view` returns an `Element<Url>` and
     /// we need a `Message` to map into.
     MarkdownLinkClicked(iced::widget::markdown::Url),
+    /// The chat panel's `scrollable` fired `on_scroll`. Used to track the
+    /// user's scroll position so we can (a) release autoscroll when they
+    /// scroll away from the bottom, (b) re-engage it when they scroll
+    /// back, and (c) compute clamped absolute offsets for Up/Down keys.
+    ChatScrolled(scrollable::Viewport),
 }
 
 /// Root application state.
@@ -553,6 +609,7 @@ impl Launchpad {
                             self.idle_row_count(),
                         )
                     }
+                    Mode::Chatting => self.chat_scroll_by(-CHAT_SCROLL_STEP),
                     _ => Task::none(),
                 }
             }
@@ -581,6 +638,7 @@ impl Launchpad {
                             self.idle_row_count(),
                         )
                     }
+                    Mode::Chatting => self.chat_scroll_by(CHAT_SCROLL_STEP),
                     _ => Task::none(),
                 }
             }
@@ -604,11 +662,16 @@ impl Launchpad {
             }
 
             Message::SelectChat(chat_id) => {
-                if self.chats.contains_key(&chat_id) {
+                if let Some(entry) = self.chats.get_mut(&chat_id) {
+                    entry.scroll.autoscroll = true;
                     self.active_chat_id = Some(chat_id);
                     self.mode = Mode::Chatting;
                     self.input.clear();
-                    Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())])
+                    Task::batch([
+                        self.resize_task(),
+                        text_input::focus(INPUT_ID.clone()),
+                        snap_chat_to_bottom(),
+                    ])
                 } else {
                     Task::none()
                 }
@@ -640,7 +703,13 @@ impl Launchpad {
                     entry.state.next_msg_id = max_id + 1;
                     entry.state.status = ChatStatus::Idle;
                 }
-                Task::none()
+                // If the resumed chat is what the user is looking at,
+                // pin to the bottom now that the history has landed.
+                if self.active_chat_id == Some(chat_id) && self.mode == Mode::Chatting {
+                    snap_chat_to_bottom()
+                } else {
+                    Task::none()
+                }
             }
 
             Message::CloseSettings => {
@@ -798,7 +867,56 @@ impl Launchpad {
                 }
                 Task::none()
             }
+
+            Message::ChatScrolled(viewport) => {
+                // Record the new viewport geometry on the active chat and
+                // recompute `autoscroll`: on when the user is sitting at
+                // (or below — rounding) the bottom, off otherwise. The
+                // zero-overflow case (content shorter than viewport) also
+                // counts as "at the bottom" so autoscroll stays engaged
+                // for short chats.
+                if let Some(chat_id) = self.active_chat_id {
+                    if let Some(entry) = self.chats.get_mut(&chat_id) {
+                        let offset = viewport.absolute_offset();
+                        let viewport_h = viewport.bounds().height;
+                        let content_h = viewport.content_bounds().height;
+                        let max_y = (content_h - viewport_h).max(0.0);
+                        // 2px slack so a near-bottom rounded offset still
+                        // counts as "at bottom".
+                        let at_bottom = max_y - offset.y <= 2.0;
+                        entry.scroll.offset = offset;
+                        entry.scroll.viewport_h = viewport_h;
+                        entry.scroll.content_h = content_h;
+                        entry.scroll.autoscroll = at_bottom;
+                    }
+                }
+                Task::none()
+            }
         }
+    }
+
+    /// Scroll the active chat panel by `delta` pixels (positive = down,
+    /// negative = up), clamped to the scrollable range. No-op when there
+    /// is no active chat, or when the content fits within the viewport.
+    /// Returns a `scroll_to` task; the resulting `on_scroll` callback
+    /// updates `autoscroll` for us.
+    fn chat_scroll_by(&mut self, delta: f32) -> Task<Message> {
+        let Some(chat_id) = self.active_chat_id else {
+            return Task::none();
+        };
+        let Some(entry) = self.chats.get_mut(&chat_id) else {
+            return Task::none();
+        };
+        let max_y = entry.scroll.max_y();
+        if max_y <= 0.0 {
+            return Task::none();
+        }
+        let new_y = (entry.scroll.offset.y + delta).clamp(0.0, max_y);
+        entry.scroll.offset.y = new_y;
+        scrollable::scroll_to(
+            CHAT_SCROLL_ID.clone(),
+            scrollable::AbsoluteOffset { x: 0.0, y: new_y },
+        )
     }
 
     pub fn view(&self, window_id: iced::window::Id) -> Element<'_, Message> {
@@ -871,6 +989,7 @@ impl Launchpad {
                         &entry.state.messages,
                         ready,
                         self.spinner_frame,
+                        CHAT_SCROLL_ID.clone(),
                     ));
                 }
             }
@@ -927,11 +1046,16 @@ impl Launchpad {
                     Some(IdleRowSelection::Active(chat_id)) => {
                         let cid = *chat_id;
                         // Enter the chat view without spawning anything.
-                        if self.chats.contains_key(&cid) {
+                        if let Some(entry) = self.chats.get_mut(&cid) {
+                            entry.scroll.autoscroll = true;
                             self.active_chat_id = Some(cid);
                             self.mode = Mode::Chatting;
                             self.input.clear();
-                            Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())])
+                            Task::batch([
+                                self.resize_task(),
+                                text_input::focus(INPUT_ID.clone()),
+                                snap_chat_to_bottom(),
+                            ])
                         } else {
                             Task::none()
                         }
@@ -967,12 +1091,17 @@ impl Launchpad {
                     ChatEntry {
                         state,
                         sidecar: None,
+                        scroll: ChatScrollState::new(),
                     },
                 );
                 self.active_chat_id = Some(chat_id);
                 self.mode = Mode::Chatting;
                 self.input.clear();
-                return Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())]);
+                return Task::batch([
+                    self.resize_task(),
+                    text_input::focus(INPUT_ID.clone()),
+                    snap_chat_to_bottom(),
+                ]);
             }
         };
 
@@ -982,13 +1111,18 @@ impl Launchpad {
             ChatEntry {
                 state,
                 sidecar: Some(spawned),
+                scroll: ChatScrollState::new(),
             },
         );
         self.active_chat_id = Some(chat_id);
         self.mode = Mode::Chatting;
         self.input.clear();
 
-        Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())])
+        Task::batch([
+            self.resize_task(),
+            text_input::focus(INPUT_ID.clone()),
+            snap_chat_to_bottom(),
+        ])
     }
 
     fn resume_session(&mut self, info: SessionInfo) -> Task<Message> {
@@ -999,10 +1133,17 @@ impl Launchpad {
             .iter()
             .find(|(_, e)| e.state.session_id.as_deref() == Some(info.session_id.as_str()))
         {
+            if let Some(entry) = self.chats.get_mut(&existing) {
+                entry.scroll.autoscroll = true;
+            }
             self.active_chat_id = Some(existing);
             self.mode = Mode::Chatting;
             self.input.clear();
-            return Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())]);
+            return Task::batch([
+                self.resize_task(),
+                text_input::focus(INPUT_ID.clone()),
+                snap_chat_to_bottom(),
+            ]);
         }
 
         let chat_id = self.alloc_chat_id();
@@ -1017,6 +1158,7 @@ impl Launchpad {
             ChatEntry {
                 state,
                 sidecar: None,
+                scroll: ChatScrollState::new(),
             },
         );
         self.active_chat_id = Some(chat_id);
@@ -1036,7 +1178,14 @@ impl Launchpad {
             });
         });
 
-        Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())])
+        // The snap here covers the fast-path where history may already
+        // be cached / very short; the `HistoryLoaded` handler will emit
+        // another snap once the background load completes.
+        Task::batch([
+            self.resize_task(),
+            text_input::focus(INPUT_ID.clone()),
+            snap_chat_to_bottom(),
+        ])
     }
 
     fn send_follow_up(&mut self, content: String) -> Task<Message> {
@@ -1059,7 +1208,9 @@ impl Launchpad {
         });
 
         // Push the user bubble + flip status to Streaming before we
-        // hand off to the sidecar.
+        // hand off to the sidecar. Submitting a follow-up implicitly
+        // re-engages autoscroll — the user wants to see their own
+        // message (and the reply) land at the bottom.
         if let Some(entry) = self.chats.get_mut(&chat_id) {
             let user_id = entry.state.alloc_msg_id();
             entry
@@ -1068,6 +1219,7 @@ impl Launchpad {
                 .push(ChatMessageView::user(user_id, content.clone()));
             entry.state.current_assistant_id = None;
             entry.state.status = ChatStatus::Streaming;
+            entry.scroll.autoscroll = true;
         }
         self.input.clear();
 
@@ -1092,7 +1244,7 @@ impl Launchpad {
                 }
             }
         }
-        Task::none()
+        snap_chat_to_bottom()
     }
 
     /// Spawn a sidecar for `chat_id` and return the handle. Sets up a
@@ -1147,9 +1299,21 @@ impl Launchpad {
             return Task::none();
         };
         let prev_status = entry.state.status;
+        // `TextDelta`, `ToolStart`, `ToolEnd`, and `Error` all append to
+        // `messages` / `blocks`. `SessionId`, `Ready`, and `Complete`
+        // don't add visible content so they don't need an autoscroll.
+        let grows_content = matches!(
+            event,
+            SidecarEvent::TextDelta { .. }
+                | SidecarEvent::ToolStart { .. }
+                | SidecarEvent::ToolEnd { .. }
+                | SidecarEvent::Error { .. }
+        );
         entry.state.apply_event(event);
         let status_changed = entry.state.status != prev_status;
+        let autoscroll = entry.scroll.autoscroll;
 
+        let mut tasks: Vec<Task<Message>> = Vec::new();
         // If the palette is currently showing the idle list and a
         // background chat's status just flipped (e.g. Initializing →
         // Streaming or Streaming → Idle), we may need to resize: the
@@ -1161,9 +1325,22 @@ impl Launchpad {
             && self.mode == Mode::Idle
             && self.input.is_empty()
         {
-            self.resize_task()
-        } else {
+            tasks.push(self.resize_task());
+        }
+        // Autoscroll: pin the chat view to the bottom whenever the
+        // active chat just grew and the user hasn't scrolled away.
+        if grows_content
+            && autoscroll
+            && self.mode == Mode::Chatting
+            && self.active_chat_id == Some(chat_id)
+        {
+            tasks.push(snap_chat_to_bottom());
+        }
+
+        if tasks.is_empty() {
             Task::none()
+        } else {
+            Task::batch(tasks)
         }
     }
 
