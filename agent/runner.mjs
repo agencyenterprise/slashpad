@@ -94,12 +94,17 @@ async function runTurn(userPrompt) {
 
   const options = {
     cwd: cwd || process.env.HOME,
-    // Use the claude_code preset; settingSources: ["project"] loads
-    // ~/.launchpad/CLAUDE.md (seeded from bundled-prompts/CLAUDE.md by Rust),
-    // which is how Launchpad's system prompt is customized.
+    // Use the claude_code preset. `settingSources` controls which on-disk
+    // Claude settings the SDK loads:
+    //   - ["project"] always loads ~/.launchpad/CLAUDE.md (seeded from
+    //     bundled-prompts/CLAUDE.md by Rust), which is how Launchpad's
+    //     system prompt is customized.
+    //   - ["user", "project"] additionally loads ~/.claude/ — the user's
+    //     personal CLAUDE.md, skills, and hooks — when the Settings
+    //     "Load user-level Claude settings & skills" checkbox is on.
     systemPrompt: { type: "preset", preset: "claude_code" },
     allowedTools: ["Read", "Write", "Bash", "Glob", "Grep", "Skill"],
-    settingSources: ["project"],
+    settingSources: payload.loadUserSettings ? ["user", "project"] : ["project"],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     maxTurns: 10,

@@ -6,6 +6,7 @@ use iced::{Element, Length};
 use crate::app::Message;
 use crate::settings::PreferredTerminal;
 
+#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     api_key_input: &'a str,
     api_key_visible: bool,
@@ -14,6 +15,7 @@ pub fn view<'a>(
     recording: bool,
     hotkey_error: Option<&'a str>,
     preferred_terminal: PreferredTerminal,
+    load_user_settings: bool,
 ) -> Element<'a, Message> {
     let header = row![
         text("Settings").size(13).color(super::theme::TEXT),
@@ -234,6 +236,47 @@ pub fn view<'a>(
     ]
     .spacing(6);
 
+    let user_settings_checkbox =
+        checkbox("Load user-level Claude settings & skills", load_user_settings)
+            .on_toggle(Message::LoadUserSettingsToggled)
+            .size(14)
+            .text_size(13)
+            .spacing(8)
+            .style(|_theme: &iced::Theme, status| {
+                let checked = matches!(
+                    status,
+                    iced::widget::checkbox::Status::Active { is_checked: true }
+                        | iced::widget::checkbox::Status::Hovered { is_checked: true }
+                        | iced::widget::checkbox::Status::Disabled { is_checked: true }
+                );
+                iced::widget::checkbox::Style {
+                    background: iced::Background::Color(if checked {
+                        super::theme::ACCENT
+                    } else {
+                        super::theme::SURFACE_2
+                    }),
+                    icon_color: super::theme::SURFACE_0,
+                    border: iced::Border {
+                        color: if checked {
+                            super::theme::ACCENT
+                        } else {
+                            super::theme::SURFACE_3
+                        },
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    text_color: Some(super::theme::TEXT),
+                }
+            });
+
+    let user_settings_row = column![
+        user_settings_checkbox,
+        text("Loads CLAUDE.md, skills, and hooks from ~/.claude/")
+            .size(11)
+            .color(super::theme::MUTED),
+    ]
+    .spacing(6);
+
     let actions = row![
         button(text("Show Launcher").size(12).color(super::theme::TEXT))
             .on_press(Message::HotkeyPressed)
@@ -265,9 +308,16 @@ pub fn view<'a>(
     ]
     .spacing(8);
 
-    let body = column![header, api_row, hotkey_row, terminal_row, actions]
-        .spacing(14)
-        .padding(16);
+    let body = column![
+        header,
+        api_row,
+        hotkey_row,
+        terminal_row,
+        user_settings_row,
+        actions
+    ]
+    .spacing(14)
+    .padding(16);
 
     container(body)
         .width(Length::Fill)

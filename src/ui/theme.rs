@@ -145,7 +145,7 @@ pub fn palette_window_settings() -> iced::window::Settings {
 /// over fullscreen apps. Fixable later.
 pub fn settings_window_settings(x: f32, y: f32) -> iced::window::Settings {
     iced::window::Settings {
-        size: iced::Size::new(340.0, 360.0),
+        size: iced::Size::new(340.0, 430.0),
         position: iced::window::Position::Specific(iced::Point::new(x, y)),
         min_size: None,
         max_size: None,

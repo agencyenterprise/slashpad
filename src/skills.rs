@@ -21,6 +21,14 @@ fn skills_dir() -> PathBuf {
         .join("skills")
 }
 
+/// User-level skills directory at `~/.claude/skills/`. Loaded in
+/// addition to `skills_dir()` when the settings "Load user-level
+/// Claude settings & skills" checkbox is enabled.
+fn user_skills_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".claude").join("skills")
+}
+
 #[derive(Debug, Deserialize)]
 struct Frontmatter {
     name: Option<String>,
@@ -36,15 +44,34 @@ fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
     serde_yaml::from_str::<Frontmatter>(block).ok()
 }
 
-/// Load every user-invocable skill under `~/.launchpad/.claude/skills`.
-pub fn load_skills() -> anyhow::Result<Vec<Skill>> {
-    let root = skills_dir();
+/// Load every user-invocable skill under `~/.launchpad/.claude/skills`,
+/// and — when `load_user_settings` is true — also under `~/.claude/skills`.
+/// On name collisions the project-level (`~/.launchpad/...`) skill wins,
+/// so Launchpad's bundled skills can't be shadowed by a user skill with
+/// the same name.
+pub fn load_skills(load_user_settings: bool) -> anyhow::Result<Vec<Skill>> {
+    // Project-level first so it wins on name collisions during dedup.
+    let mut out = load_skills_from(&skills_dir())?;
+
+    if load_user_settings {
+        let user = load_skills_from(&user_skills_dir())?;
+        for skill in user {
+            if !out.iter().any(|existing| existing.name == skill.name) {
+                out.push(skill);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn load_skills_from(root: &Path) -> anyhow::Result<Vec<Skill>> {
     if !root.exists() {
         return Ok(Vec::new());
     }
 
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(&root)? {
+    for entry in std::fs::read_dir(root)? {
         let entry = match entry {
             Ok(e) => e,
             Err(_) => continue,

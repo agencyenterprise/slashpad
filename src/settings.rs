@@ -134,6 +134,13 @@ pub struct AppSettings {
     /// built-in Terminal.app so it works on a fresh macOS install.
     #[serde(default, rename = "preferredTerminal")]
     pub preferred_terminal: PreferredTerminal,
+    /// When true, the sidecar loads user-level settings, skills, and
+    /// hooks from `~/.claude/` (via the Agent SDK's `settingSources:
+    /// ["user", "project"]`) and the palette's skill list is augmented
+    /// with skills from `~/.claude/skills/`. Off by default so a fresh
+    /// install stays isolated to Launchpad's own `~/.launchpad/` scope.
+    #[serde(default, rename = "loadUserSettings")]
+    pub load_user_settings: bool,
 }
 
 fn default_hotkey() -> String {
@@ -150,6 +157,7 @@ impl Default for AppSettings {
             hotkey: DEFAULT_HOTKEY.to_string(),
             use_subscription: true,
             preferred_terminal: PreferredTerminal::default(),
+            load_user_settings: false,
         }
     }
 }

@@ -221,6 +221,12 @@ pub enum Message {
     /// means route through `claude login` (no API key forwarded);
     /// `false` reveals the API key input.
     UseSubscriptionToggled(bool),
+    /// The "Load user-level Claude settings & skills" checkbox was
+    /// toggled. When `true`, the sidecar receives `settingSources:
+    /// ["user", "project"]` and the palette skill list is augmented
+    /// with skills from `~/.claude/skills/`; when `false`, scope is
+    /// limited to `~/.launchpad/`.
+    LoadUserSettingsToggled(bool),
     /// Tray left-click → open a new settings window anchored below the
     /// tray icon at the given logical-pixel rect.
     TrayOpenSettings {
@@ -337,7 +343,7 @@ impl Launchpad {
         // so `external_sender()` is ready for the hotkey forwarder below.
 
         let settings = AppSettings::load_or_default();
-        let all_skills = skills::load_skills().unwrap_or_default();
+        let all_skills = skills::load_skills(settings.load_user_settings).unwrap_or_default();
 
         // Spin up the hotkey manager — forwards presses into the external bus.
         match hotkey::spawn(&settings.hotkey) {
@@ -827,6 +833,35 @@ impl Launchpad {
                 Task::none()
             }
 
+            Message::LoadUserSettingsToggled(enabled) => {
+                self.settings.load_user_settings = enabled;
+                if let Err(e) = self.settings.save() {
+                    eprintln!("[launchpad] failed to save loadUserSettings: {e}");
+                }
+                // Reload the palette's skill list so the new scope
+                // takes effect immediately without restarting the app.
+                // New chat sidecars pick up the flag on spawn via the
+                // payload; already-running chats keep their original
+                // scope until restarted, which is fine.
+                self.all_skills =
+                    skills::load_skills(enabled).unwrap_or_default();
+                self.filtered_skills = if self.mode == Mode::Skills {
+                    if let Some(query) = self.input.strip_prefix('/') {
+                        if query.is_empty() {
+                            self.all_skills.clone()
+                        } else {
+                            crate::fuzzy::filter_skills(&self.all_skills, query)
+                        }
+                    } else {
+                        self.all_skills.clone()
+                    }
+                } else {
+                    self.all_skills.clone()
+                };
+                self.selected_skill_index = 0;
+                Task::none()
+            }
+
             Message::TrayOpenSettings {
                 tray_x,
                 tray_y,
@@ -1006,6 +1041,7 @@ impl Launchpad {
                 self.recording_hotkey,
                 self.hotkey_error.as_deref(),
                 self.settings.preferred_terminal,
+                self.settings.load_user_settings,
             ))
             .padding(8)
             .width(iced::Length::Fill)
@@ -1352,6 +1388,7 @@ impl Launchpad {
             home.to_string_lossy().to_string(),
             api_key,
             resume,
+            self.settings.load_user_settings,
         );
         let mut spawned = sidecar::spawn(payload)?;
 
