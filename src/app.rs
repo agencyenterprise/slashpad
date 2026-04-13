@@ -12,11 +12,29 @@
 //!   subscription drains the cleanup.
 
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use iced::futures::{SinkExt, Stream};
-use iced::widget::{column, container, text_input, Column};
+use iced::widget::{column, container, scrollable, text_input, Column};
 use iced::{Element, Subscription, Task, Theme};
+
+/// Stable scrollable ids so `scrollable::snap_to` can target the skill and
+/// idle lists across redraws.
+static SKILL_LIST_SCROLL_ID: LazyLock<scrollable::Id> =
+    LazyLock::new(scrollable::Id::unique);
+static IDLE_LIST_SCROLL_ID: LazyLock<scrollable::Id> =
+    LazyLock::new(scrollable::Id::unique);
+
+/// Snap a scrollable so the row at `index` (in a list of `count`) is visible.
+/// Uses a fractional offset: index 0 -> top, last index -> bottom.
+fn snap_to_selection(id: scrollable::Id, index: usize, count: usize) -> Task<Message> {
+    let y = if count <= 1 {
+        0.0
+    } else {
+        index as f32 / (count - 1) as f32
+    };
+    scrollable::snap_to(id, scrollable::RelativeOffset { x: 0.0, y })
+}
 use tokio::sync::mpsc;
 
 use crate::hotkey;
@@ -497,15 +515,24 @@ impl Launchpad {
                         if self.selected_skill_index > 0 {
                             self.selected_skill_index -= 1;
                         }
+                        snap_to_selection(
+                            SKILL_LIST_SCROLL_ID.clone(),
+                            self.selected_skill_index,
+                            self.filtered_skills.len(),
+                        )
                     }
                     Mode::Idle if self.input.is_empty() && self.idle_row_count() > 0 => {
                         if self.selected_idle_index > 0 {
                             self.selected_idle_index -= 1;
                         }
+                        snap_to_selection(
+                            IDLE_LIST_SCROLL_ID.clone(),
+                            self.selected_idle_index,
+                            self.idle_row_count(),
+                        )
                     }
-                    _ => {}
+                    _ => Task::none(),
                 }
-                Task::none()
             }
 
             Message::NavDown => {
@@ -515,16 +542,25 @@ impl Launchpad {
                         if self.selected_skill_index < max {
                             self.selected_skill_index += 1;
                         }
+                        snap_to_selection(
+                            SKILL_LIST_SCROLL_ID.clone(),
+                            self.selected_skill_index,
+                            self.filtered_skills.len(),
+                        )
                     }
                     Mode::Idle if self.input.is_empty() && self.idle_row_count() > 0 => {
                         let max = self.idle_row_count().saturating_sub(1);
                         if self.selected_idle_index < max {
                             self.selected_idle_index += 1;
                         }
+                        snap_to_selection(
+                            IDLE_LIST_SCROLL_ID.clone(),
+                            self.selected_idle_index,
+                            self.idle_row_count(),
+                        )
                     }
-                    _ => {}
+                    _ => Task::none(),
                 }
-                Task::none()
             }
 
             Message::SelectSkill(i) => {
@@ -748,6 +784,7 @@ impl Launchpad {
                 stack = stack.push(ui::skill_list::view(
                     &self.filtered_skills,
                     self.selected_skill_index,
+                    SKILL_LIST_SCROLL_ID.clone(),
                 ));
             }
             Mode::Idle if self.input.is_empty() && self.idle_row_count() > 0 => {
@@ -773,6 +810,7 @@ impl Launchpad {
                     &rows,
                     self.selected_idle_index,
                     self.spinner_frame,
+                    IDLE_LIST_SCROLL_ID.clone(),
                 ));
             }
             Mode::Chatting => {

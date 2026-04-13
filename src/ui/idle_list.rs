@@ -4,7 +4,7 @@
 //! borrowed references into `self.chats` / `self.recent_sessions`, so
 //! the view lifetime is tied to `&Launchpad`.
 
-use iced::widget::{button, container, row, text, Column};
+use iced::widget::{button, container, row, scrollable, text, Column};
 use iced::{Element, Length};
 
 use crate::app::{ChatEntry, Message};
@@ -22,6 +22,7 @@ pub fn view<'a>(
     rows: &[IdleRow<'a>],
     selected: usize,
     spinner_frame: u32,
+    scroll_id: scrollable::Id,
 ) -> Element<'a, Message> {
     let mut col: Column<'a, Message> = Column::new();
 
@@ -30,9 +31,12 @@ pub fn view<'a>(
     // list, not the unified list, to stay in sync with
     // `Launchpad::past_session_rows()`.
     let mut past_index: usize = 0;
+    let last = rows.len().saturating_sub(1);
 
     for (i, row_item) in rows.iter().enumerate() {
         let is_selected = i == selected;
+        let is_first = i == 0;
+        let is_last = i == last;
         let (row_el, msg) = match row_item {
             IdleRow::Active(entry) => {
                 let title = entry.state.title.clone();
@@ -79,6 +83,11 @@ pub fn view<'a>(
                 } else {
                     iced::Color::TRANSPARENT
                 })),
+                border: iced::Border {
+                    color: iced::Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: selection_radius(is_first, is_last),
+                },
                 text_color: Some(super::theme::TEXT),
                 ..Default::default()
             },
@@ -96,9 +105,11 @@ pub fn view<'a>(
         col = col.push(btn);
     }
 
-    container(col)
+    // See `skill_list::view` for the `max_height` rationale.
+    container(scrollable(col).id(scroll_id))
         .padding(0)
         .width(Length::Fill)
+        .max_height(260.0)
         .style(|_theme: &iced::Theme| iced::widget::container::Style {
             background: Some(iced::Background::Color(super::theme::SURFACE_1)),
             border: iced::Border {
@@ -110,6 +121,19 @@ pub fn view<'a>(
             ..Default::default()
         })
         .into()
+}
+
+/// Per-row corner radii that match the panel's 12px border on the outer
+/// edges. Without this, a highlighted first/last row draws sharp corners
+/// that poke outside the rounded panel.
+fn selection_radius(is_first: bool, is_last: bool) -> iced::border::Radius {
+    let r = 11.0;
+    iced::border::Radius {
+        top_left: if is_first { r } else { 0.0 },
+        top_right: if is_first { r } else { 0.0 },
+        bottom_left: if is_last { r } else { 0.0 },
+        bottom_right: if is_last { r } else { 0.0 },
+    }
 }
 
 fn status_text(status: ChatStatus, spinner_frame: u32) -> String {
