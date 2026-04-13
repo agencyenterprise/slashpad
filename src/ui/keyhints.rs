@@ -15,7 +15,7 @@ use super::theme;
 
 /// Extra palette-state needed to decide which hints to show. Kept narrow
 /// on purpose — we don't want this view borrowing `&App`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct KeyhintContext {
     /// True when the Idle list has at least one visible row (active
     /// chats or past sessions, after the live fuzzy filter).
@@ -30,6 +30,9 @@ pub struct KeyhintContext {
     /// the "⌘T Terminal" hint so it only shows when Cmd+T would
     /// actually resolve to a resumable session.
     pub has_session_id: bool,
+    /// Tilde-abbreviated display of the directory Claude Code is running
+    /// in (e.g. `~/.launchpad`). Rendered centered in the bar.
+    pub project_path_display: String,
 }
 
 /// Fixed footer height reserved for the keyhints bar, used by
@@ -69,6 +72,10 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
     let mut bar: Row<'static, Message> = Row::new().spacing(12).align_y(iced::Alignment::Center);
     for (key, label) in left {
         bar = bar.push(hint_item(key, label));
+    }
+    bar = bar.push(horizontal_space().width(Length::Fill));
+    if !ctx.project_path_display.is_empty() && !matches!(mode, Mode::Settings) {
+        bar = bar.push(text(ctx.project_path_display).size(11).color(theme::MUTED));
     }
     bar = bar.push(horizontal_space().width(Length::Fill));
     for (key, label) in right {

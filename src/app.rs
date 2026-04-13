@@ -42,6 +42,21 @@ fn snap_to_selection(id: scrollable::Id, index: usize, count: usize) -> Task<Mes
     scrollable::snap_to(id, scrollable::RelativeOffset { x: 0.0, y })
 }
 
+/// Tilde-abbreviate `$HOME` in a path for display (e.g.
+/// `/Users/foo/.launchpad` → `~/.launchpad`). Used by the hotkeys bar to
+/// show the current Claude project directory.
+fn display_project_path(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy();
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            if let Some(rest) = s.strip_prefix(&home) {
+                return format!("~{}", rest);
+            }
+        }
+    }
+    s.into_owned()
+}
+
 /// Pin the chat scrollable to the bottom. Runs against the *next* laid-out
 /// frame, so it sees freshly appended content and lands at y=content_end.
 fn snap_chat_to_bottom() -> Task<Message> {
@@ -347,6 +362,12 @@ pub struct Launchpad {
     /// which would close it before the user can interact. Any blur event
     /// within `SETTINGS_BLUR_GRACE_MS` of open is ignored.
     pub settings_opened_at: Option<std::time::Instant>,
+
+    /// Directory Claude Code runs in (`cwd` passed to the sidecar).
+    /// Cached at startup from `sidecar::launchpad_home()` so the UI can
+    /// render it without hitting the filesystem. Becomes user-settable
+    /// in a follow-up change.
+    pub project_path: std::path::PathBuf,
 }
 
 impl Launchpad {
@@ -405,6 +426,8 @@ impl Launchpad {
             palette_window_id: Some(palette_id),
             settings_window_id: None,
             settings_opened_at: None,
+            project_path: sidecar::launchpad_home()
+                .unwrap_or_else(|_| std::path::PathBuf::from(".")),
         };
 
         // Tray icon creation must happen on the main thread AFTER the
@@ -1031,13 +1054,7 @@ impl Launchpad {
                         return Task::none();
                     }
                 };
-                let cwd = match sidecar::launchpad_home() {
-                    Ok(p) => p.to_string_lossy().into_owned(),
-                    Err(e) => {
-                        eprintln!("[launchpad] Cmd+T failed: could not resolve ~/.launchpad: {e}");
-                        return Task::none();
-                    }
-                };
+                let cwd = self.project_path.to_string_lossy().into_owned();
                 if let Err(e) = crate::terminal::open_claude_resume(
                     self.settings.preferred_terminal,
                     &cwd,
@@ -1206,6 +1223,7 @@ impl Launchpad {
                     .active_chat()
                     .and_then(|e| e.state.session_id.as_deref())
                     .is_some(),
+                project_path_display: display_project_path(&self.project_path),
             },
         ));
 
@@ -1484,7 +1502,6 @@ impl Launchpad {
         prompt: String,
         resume: Option<String>,
     ) -> anyhow::Result<SpawnedSidecar> {
-        let home = sidecar::launchpad_home()?;
         // Subscription mode: don't forward a key, let the Agent SDK
         // fall back to the user's `claude login` session. API-key
         // mode: forward whatever is saved in the OS keychain.
@@ -1495,7 +1512,7 @@ impl Launchpad {
         };
         let payload = Payload::chat(
             prompt,
-            home.to_string_lossy().to_string(),
+            self.project_path.to_string_lossy().to_string(),
             api_key,
             resume,
             self.settings.load_user_settings,
