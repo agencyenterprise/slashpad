@@ -159,6 +159,20 @@ pub struct ChatState {
     pub next_msg_id: u64,
     pub status: ChatStatus,
     pub started_at: std::time::Instant,
+    /// Wall-clock time of the last sidecar event, as unix millis. Bumped
+    /// by every `apply_event` call so the idle list can render a
+    /// "last activity" relative timestamp for chats that aren't mid-turn.
+    pub last_activity_ms: i64,
+}
+
+/// Current wall-clock time as unix millis. Used for `last_activity_ms`
+/// bookkeeping; same calculation as `idle_list::format_relative`'s `now`.
+fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 impl ChatState {
@@ -176,6 +190,7 @@ impl ChatState {
             next_msg_id: 1,
             status: ChatStatus::Initializing,
             started_at: std::time::Instant::now(),
+            last_activity_ms: now_ms(),
         };
         let user_id = me.alloc_msg_id();
         me.messages
@@ -198,6 +213,7 @@ impl ChatState {
             // no in-flight turn, we're just viewing history.
             status: ChatStatus::Idle,
             started_at: std::time::Instant::now(),
+            last_activity_ms: now_ms(),
         }
     }
 
@@ -239,6 +255,7 @@ impl ChatState {
     /// the old `Launchpad::process_sidecar_event` (app.rs pre-refactor)
     /// but scoped to a single chat, and drives `status` transitions.
     pub fn apply_event(&mut self, event: SidecarEvent) {
+        self.last_activity_ms = now_ms();
         match event {
             SidecarEvent::Ready { .. } => {
                 self.status = ChatStatus::Idle;

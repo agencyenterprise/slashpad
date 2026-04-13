@@ -42,7 +42,11 @@ pub fn view<'a>(
         let (row_el, msg) = match row_item {
             IdleRow::Active(entry) => {
                 let title = entry.state.title.clone();
-                let status_label = status_text(entry.state.status, spinner_frame);
+                let status_label = status_text(
+                    entry.state.status,
+                    spinner_frame,
+                    entry.state.last_activity_ms,
+                );
                 let status_color = status_color(entry.state.status);
                 let row = row![
                     text(title)
@@ -138,24 +142,22 @@ fn selection_radius(_is_first: bool, _is_last: bool) -> iced::border::Radius {
     0.0.into()
 }
 
-fn status_text(status: ChatStatus, spinner_frame: u32) -> String {
+fn status_text(status: ChatStatus, spinner_frame: u32, last_activity_ms: i64) -> String {
     const FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
     let glyph = FRAMES[(spinner_frame as usize) % FRAMES.len()];
     match status {
         ChatStatus::Initializing => format!("{glyph} starting"),
         ChatStatus::Streaming => format!("{glyph} streaming"),
-        ChatStatus::Idle => "ready".to_string(),
-        ChatStatus::Error => "error".to_string(),
-        ChatStatus::Closed => "closed".to_string(),
+        ChatStatus::Idle | ChatStatus::Error | ChatStatus::Closed => {
+            format_relative(last_activity_ms)
+        }
     }
 }
 
 fn status_color(status: ChatStatus) -> iced::Color {
     match status {
         ChatStatus::Initializing | ChatStatus::Streaming => super::theme::ACCENT,
-        ChatStatus::Idle => super::theme::SUCCESS,
-        ChatStatus::Error => super::theme::DANGER,
-        ChatStatus::Closed => super::theme::MUTED,
+        ChatStatus::Idle | ChatStatus::Error | ChatStatus::Closed => super::theme::MUTED,
     }
 }
 
