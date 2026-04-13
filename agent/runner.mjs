@@ -85,7 +85,7 @@ if (mode === "messages") {
 }
 
 // Chat mode — long-lived process
-const { prompt, systemPrompt, cwd } = payload;
+const { prompt, cwd } = payload;
 let sessionId = payload.resume || null;
 let isFirstTurn = true;
 
@@ -94,7 +94,10 @@ async function runTurn(userPrompt) {
 
   const options = {
     cwd: cwd || process.env.HOME,
-    systemPrompt: systemPrompt || undefined,
+    // Use the claude_code preset; settingSources: ["project"] loads
+    // ~/.launchpad/CLAUDE.md (seeded from bundled-prompts/CLAUDE.md by Rust),
+    // which is how Launchpad's system prompt is customized.
+    systemPrompt: { type: "preset", preset: "claude_code" },
     allowedTools: ["Read", "Write", "Bash", "Glob", "Grep", "Skill"],
     settingSources: ["project"],
     permissionMode: "bypassPermissions",

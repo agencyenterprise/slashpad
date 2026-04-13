@@ -30,6 +30,11 @@ fn main() -> iced::Result {
         eprintln!("[launchpad] Failed to seed bundled skills: {e}");
     }
 
+    // Seed the default CLAUDE.md so the user can customize the system prompt.
+    if let Err(e) = sidecar::seed_default_claude_md() {
+        eprintln!("[launchpad] Failed to seed default CLAUDE.md: {e}");
+    }
+
     // Use an Accessory activation policy on macOS so no Dock icon appears.
     #[cfg(target_os = "macos")]
     platform::macos::set_accessory_activation_policy();
