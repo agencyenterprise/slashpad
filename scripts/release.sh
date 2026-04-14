@@ -46,8 +46,9 @@ SHA=$(curl -sL "$TARBALL_URL" | shasum -a 256 | awk '{print $1}')
 echo "    sha256: ${SHA}"
 
 # ── 4. Update the formula in this repo (reference copy) ────────────
-sed -i '' "s|url \".*\"|url \"${TARBALL_URL}\"|" Formula/slashpad.rb
-sed -i '' "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/slashpad.rb
+# Only replace the top-level url/sha256 (lines 4-5), not resource blocks.
+sed -i '' "4s|url \".*\"|url \"${TARBALL_URL}\"|" Formula/slashpad.rb
+sed -i '' "5s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/slashpad.rb
 echo "==> Updated Formula/slashpad.rb"
 
 # ── 5. Clone tap repo, update formula, push ────────────────────────
