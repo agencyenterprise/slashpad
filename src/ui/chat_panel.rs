@@ -12,7 +12,7 @@ pub fn view<'a>(
     spinner_frame: u32,
     scroll_id: scrollable::Id,
 ) -> Element<'a, Message> {
-    let mut col: Column<'a, Message> = Column::new().spacing(12);
+    let mut col: Column<'a, Message> = Column::new().spacing(12).width(Length::Fill);
 
     for msg in messages {
         match msg.role {
@@ -35,9 +35,10 @@ pub fn view<'a>(
     }
 
     container(
-        scrollable(container(col).padding([0, 14]))
+        scrollable(container(col).padding([0, 14]).width(Length::Fill))
             .id(scroll_id)
             .on_scroll(Message::ChatScrolled)
+            .width(Length::Fill)
             .height(Length::Fill)
             .direction(super::theme::scrollbar_direction())
             .style(super::theme::scrollbar_style),
