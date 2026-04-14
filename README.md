@@ -15,12 +15,27 @@ Then press **Ctrl+Space** to open the palette. You can change the hotkey in Sett
 
 > macOS only. Requires Node.js 18+ (for the Claude Agent SDK sidecar).
 
+## Updating
+
+```bash
+brew upgrade slashpad
+brew services restart slashpad
+```
+
+If you built from source, pull the latest and rebuild:
+
+```bash
+git pull
+npm install
+cargo build --release
+```
+
 ## Setup
 
 Slashpad needs access to Claude. Choose one:
 
 1. **Claude subscription** (default) — run `claude login` in your terminal. That's it.
-2. **API key** — open Settings from the tray menu icon, paste your Anthropic API key, and uncheck "Use Claude subscription."
+2. **API key** — open Settings from the tray menu icon, uncheck "Use Claude subscription," and paste your Anthropic API key.
 
 ## How it works
 
