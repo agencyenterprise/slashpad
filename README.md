@@ -2,7 +2,7 @@
 
 A desktop AI command palette powered by Claude. Think Raycast, but every "extension" is a natural language skill executed by Claude with real tool access.
 
-**Ctrl+Space** → type a command or prompt → Claude does the work → copy the result.
+**Ctrl+Space** → type a command or prompt → Claude does the work.
 
 ## Install
 
@@ -20,7 +20,7 @@ Then press **Ctrl+Space** to open the palette.
 Slashpad needs access to Claude. Choose one:
 
 1. **Claude subscription** (default) — run `claude login` in your terminal. That's it.
-2. **API key** — type `/settings` in the palette, paste your Anthropic API key, and uncheck "Use Claude subscription."
+2. **API key** — open Settings from the tray menu icon, paste your Anthropic API key, and uncheck "Use Claude subscription."
 
 ## How it works
 
@@ -31,7 +31,6 @@ Slashpad needs access to Claude. Choose one:
 │  /standup        → runs a saved skill    │
 │  summarize this  → ad-hoc Claude prompt  │
 │  /skill-creator  → build a new skill     │
-│  /settings       → configure Slashpad    │
 └──────────────────────────────────────────┘
 ```
 
@@ -76,10 +75,14 @@ Claude handles installing Composio and linking your accounts automatically. The 
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+Space` | Toggle palette (customizable in `/settings`) |
+| `Ctrl+Space` | Toggle palette |
 | `/` | Browse skills |
-| `↑ ↓` | Navigate skill / session list |
-| `Enter` | Run skill or send prompt |
+| `↑` `↓` | Navigate list / scroll chat |
+| `Enter` | Run skill, open session, or send prompt |
+| `⌘+Enter` | Fire & forget (send and dismiss) |
+| `⌘+P` | Switch project |
+| `⌘+T` | Open session in terminal |
+| `Ctrl+C` | Cancel generation |
 | `Escape` | Dismiss or go back |
 
 ## Architecture
@@ -120,20 +123,6 @@ npm install              # Install sidecar dependencies
 cargo run                # Development build + run
 cargo build --release    # Optimized binary at target/release/slashpad
 ```
-
-## Roadmap
-
-- [x] Core palette UI with global hotkey
-- [x] Multi-monitor cursor-aware positioning
-- [x] Skill search with fuzzy matching
-- [x] Streaming agent sessions with tool use
-- [x] Session resume from history
-- [x] Pure native Rust (iced, no webview)
-- [ ] System tray integration
-- [ ] Dynamic window resize based on content
-- [ ] Hotkey rebinding UI
-- [ ] Rich markdown rendering in chat panel
-- [ ] `.app` bundle packaging for macOS distribution
 
 ## License
 
