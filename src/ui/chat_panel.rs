@@ -120,7 +120,7 @@ fn assistant_bubble<'a>(
     msg: &'a ChatMessageView,
     streaming_ctx: &Option<StreamingContext>,
 ) -> Element<'a, Message> {
-    let mut col: Column<'a, Message> = Column::new().spacing(6);
+    let mut col: Column<'a, Message> = Column::new().spacing(12);
     let has_tools = has_tool_blocks(msg);
 
     if msg.status == MessageStatus::Streaming {

@@ -293,7 +293,7 @@ pub fn view_expanded(block: &ContentBlock) -> Element<'_, Message> {
             }
 
             container(r)
-                .padding(Padding::from(0.0).left(12.0))
+                .padding(Padding::from([2.0, 0.0]).left(12.0))
                 .into()
         }
         ContentBlock::ToolEnd { tool, args, result } => {
@@ -331,7 +331,7 @@ pub fn view_expanded(block: &ContentBlock) -> Element<'_, Message> {
             }
 
             container(r)
-                .padding(Padding::from(0.0).left(12.0))
+                .padding(Padding::from([2.0, 0.0]).left(12.0))
                 .into()
         }
         ContentBlock::Error(err) => {
@@ -345,7 +345,7 @@ pub fn view_expanded(block: &ContentBlock) -> Element<'_, Message> {
             .align_y(iced::Alignment::Center);
 
             container(r)
-                .padding(Padding::from(0.0).left(12.0))
+                .padding(Padding::from([2.0, 0.0]).left(12.0))
                 .into()
         }
         ContentBlock::Text { .. } => container(text("")).width(Length::Shrink).into(),
