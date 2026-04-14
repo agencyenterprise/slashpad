@@ -1286,6 +1286,10 @@ impl Slashpad {
             }
 
             Message::OpenSessionInTerminal => {
+                // Swallow the stray 't' leaked by listen_with (same
+                // pattern as Cmd+P / OpenProjectPicker).
+                self.discard_next_input_change = true;
+
                 // Only meaningful from the chat view. Fire in Idle /
                 // Skills / Settings is a silent no-op so the shortcut
                 // feels dead outside its scope rather than doing
@@ -1320,8 +1324,9 @@ impl Slashpad {
                         "[slashpad] failed to open session {session_id} in {:?}: {e}",
                         self.settings.preferred_terminal
                     );
+                    return Task::none();
                 }
-                Task::none()
+                self.hide_palette()
             }
 
             Message::PreferredTerminalChanged(term) => {
