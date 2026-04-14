@@ -108,7 +108,6 @@ async function runTurn(userPrompt) {
     settingSources: payload.loadUserSettings ? ["user", "project"] : ["project"],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
-    maxTurns: 10,
     includePartialMessages: true,
   };
 
