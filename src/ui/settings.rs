@@ -296,11 +296,11 @@ pub fn view<'a>(
             .on_press(Message::QuitRequested)
             .padding([8, 14])
             .style(|_, _| iced::widget::button::Style {
-                background: Some(iced::Background::Color(super::theme::DANGER)),
+                background: Some(iced::Background::Color(super::theme::SURFACE_2)),
                 text_color: super::theme::TEXT,
                 border: iced::Border {
-                    color: iced::Color::TRANSPARENT,
-                    width: 0.0,
+                    color: super::theme::SURFACE_3,
+                    width: 1.0,
                     radius: 8.0.into(),
                 },
                 ..Default::default()
