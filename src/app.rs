@@ -834,9 +834,11 @@ impl Launchpad {
                     self.active_chat_id = None;
                     self.mode = Mode::Idle;
                     self.input.clear();
+                    self.selected_idle_index = 0;
                     return Task::batch([
                         self.resize_task(),
                         text_input::focus(INPUT_ID.clone()),
+                        snap_to_selection(IDLE_LIST_SCROLL_ID.clone(), 0, self.idle_row_count()),
                     ]);
                 }
                 self.hide_palette()
