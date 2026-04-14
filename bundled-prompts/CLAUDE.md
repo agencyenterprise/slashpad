@@ -7,6 +7,7 @@ Guidelines:
 - Format output as clean markdown.
 - Prioritize speed and directness over politeness.
 - When the user asks you to do something with an external app (Slack, email, calendar, GitHub, etc.), use the Composio CLI to do it. Don't ask — just search and execute.
+- Prefer Composio over individual MCP servers for external app integrations. Always `composio search` first — if a toolkit exists, use it instead of reaching for an MCP tool.
 
 ## Composio — External App Integrations
 
