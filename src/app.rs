@@ -226,6 +226,9 @@ pub enum Message {
     /// An iced window lost focus. Carries the window id so we can dispatch
     /// palette-vs-settings blur handling separately.
     WindowBlurred(iced::window::Id),
+    /// An iced window gained focus. Used to re-assert text input focus
+    /// when the palette returns from the background.
+    WindowFocused(iced::window::Id),
     /// An iced window closed. Fired by the `close_events` subscription so
     /// we can null out `palette_window_id` / `settings_window_id`.
     WindowClosed(iced::window::Id),
@@ -626,6 +629,9 @@ impl Launchpad {
                 iced::Event::Window(iced::window::Event::Unfocused) => {
                     Some(Message::WindowBlurred(window_id))
                 }
+                iced::Event::Window(iced::window::Event::Focused) => {
+                    Some(Message::WindowFocused(window_id))
+                }
                 _ => None,
             }),
             iced::window::close_events().map(Message::WindowClosed),
@@ -813,7 +819,10 @@ impl Launchpad {
                     self.selected_project_index = 0;
                     self.selected_idle_index = 0;
                     self.idle_selection_active = self.input.is_empty();
-                    return self.resize_task();
+                    return Task::batch([
+                        self.resize_task(),
+                        text_input::focus(INPUT_ID.clone()),
+                    ]);
                 }
                 // In Chatting mode, Esc steps back to the idle thread
                 // list instead of dismissing. The sidecar keeps streaming
@@ -825,7 +834,10 @@ impl Launchpad {
                     self.active_chat_id = None;
                     self.mode = Mode::Idle;
                     self.input.clear();
-                    return Task::none();
+                    return Task::batch([
+                        self.resize_task(),
+                        text_input::focus(INPUT_ID.clone()),
+                    ]);
                 }
                 self.hide_palette()
             }
@@ -1092,6 +1104,14 @@ impl Launchpad {
                     } else {
                         self.hide_palette()
                     }
+                } else {
+                    Task::none()
+                }
+            }
+
+            Message::WindowFocused(window_id) => {
+                if Some(window_id) == self.palette_window_id && self.palette_visible {
+                    text_input::focus(INPUT_ID.clone())
                 } else {
                     Task::none()
                 }
@@ -1839,7 +1859,7 @@ impl Launchpad {
                 }
             }
         }
-        snap_chat_to_bottom()
+        Task::batch([snap_chat_to_bottom(), text_input::focus(INPUT_ID.clone())])
     }
 
     /// Spawn a sidecar for `chat_id` and return the handle. Sets up a
@@ -1947,10 +1967,20 @@ impl Launchpad {
         if !matches!(entry.state.status, ChatStatus::Idle | ChatStatus::Error) {
             entry.state.status = ChatStatus::Closed;
         }
+        let mut tasks: Vec<Task<Message>> = Vec::new();
         if self.palette_visible && self.mode == Mode::Idle && self.input.is_empty() {
-            self.resize_task()
-        } else {
+            tasks.push(self.resize_task());
+        }
+        if self.palette_visible
+            && self.mode == Mode::Chatting
+            && self.active_chat_id == Some(chat_id)
+        {
+            tasks.push(text_input::focus(INPUT_ID.clone()));
+        }
+        if tasks.is_empty() {
             Task::none()
+        } else {
+            Task::batch(tasks)
         }
     }
 
