@@ -80,6 +80,10 @@ pub struct ChatMessageView {
     pub role: Role,
     pub blocks: Vec<ContentBlock>,
     pub status: MessageStatus,
+    /// Whether the tool-call section is expanded (user toggled).
+    pub tools_expanded: bool,
+    /// SDK-reported turn duration in milliseconds (from `SDKResultMessage`).
+    pub result_duration_ms: Option<u64>,
 }
 
 impl ChatMessageView {
@@ -89,6 +93,8 @@ impl ChatMessageView {
             role: Role::User,
             blocks: vec![ContentBlock::text(text)],
             status: MessageStatus::Complete,
+            tools_expanded: false,
+            result_duration_ms: None,
         }
     }
 
@@ -98,6 +104,8 @@ impl ChatMessageView {
             role: Role::Assistant,
             blocks: Vec::new(),
             status: MessageStatus::Streaming,
+            tools_expanded: false,
+            result_duration_ms: None,
         }
     }
 
@@ -163,6 +171,10 @@ pub struct ChatState {
     pub next_msg_id: u64,
     pub status: ChatStatus,
     pub started_at: std::time::Instant,
+    /// Set when the sidecar emits `TurnStart` at the beginning of each
+    /// turn. The chat-level "Working..." indicator reads elapsed time
+    /// from this. Reset on each new turn.
+    pub turn_submitted_at: Option<std::time::Instant>,
     /// Wall-clock time of the last sidecar event, as unix millis. Bumped
     /// by every `apply_event` call so the idle list can render a
     /// "last activity" relative timestamp for chats that aren't mid-turn.
@@ -194,6 +206,7 @@ impl ChatState {
             next_msg_id: 1,
             status: ChatStatus::Initializing,
             started_at: std::time::Instant::now(),
+            turn_submitted_at: None,
             last_activity_ms: now_ms(),
         };
         let user_id = me.alloc_msg_id();
@@ -217,6 +230,7 @@ impl ChatState {
             // no in-flight turn, we're just viewing history.
             status: ChatStatus::Idle,
             started_at: std::time::Instant::now(),
+            turn_submitted_at: None,
             last_activity_ms: now_ms(),
         }
     }
@@ -257,6 +271,7 @@ impl ChatState {
         }
         self.current_assistant_id = None;
         self.status = ChatStatus::Idle;
+        self.turn_submitted_at = None;
         self.last_activity_ms = now_ms();
     }
 
@@ -275,6 +290,11 @@ impl ChatState {
     pub fn apply_event(&mut self, event: SidecarEvent) {
         self.last_activity_ms = now_ms();
         match event {
+            SidecarEvent::TurnStart { .. } => {
+                self.turn_submitted_at = Some(std::time::Instant::now());
+                self.promote_to_streaming();
+                self.ensure_streaming_assistant();
+            }
             SidecarEvent::Ready { .. } => {
                 self.status = ChatStatus::Idle;
             }
@@ -309,8 +329,16 @@ impl ChatState {
                 self.ensure_streaming_assistant();
                 let args = args.unwrap_or_default();
                 if let Some(msg) = self.current_assistant_mut() {
-                    msg.blocks
-                        .push(ContentBlock::ToolEnd { tool, args, result });
+                    // Replace the matching ToolStart with this ToolEnd.
+                    let replaced = msg.blocks.iter_mut().rev().find(|b| {
+                        matches!(b, ContentBlock::ToolStart { tool: t, .. } if t == &tool)
+                    });
+                    if let Some(slot) = replaced {
+                        *slot = ContentBlock::ToolEnd { tool, args, result };
+                    } else {
+                        msg.blocks
+                            .push(ContentBlock::ToolEnd { tool, args, result });
+                    }
                 }
             }
             SidecarEvent::Error { error, .. } => {
@@ -323,9 +351,10 @@ impl ChatState {
                     self.push_error(err);
                 }
             }
-            SidecarEvent::Complete { .. } => {
+            SidecarEvent::Complete { duration_ms, .. } => {
                 if let Some(msg) = self.current_assistant_mut() {
                     msg.status = MessageStatus::Complete;
+                    msg.result_duration_ms = duration_ms;
                 }
                 self.current_assistant_id = None;
                 // `Complete` marks the assistant bubble done; `Ready`

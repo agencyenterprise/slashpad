@@ -69,7 +69,7 @@ if (mode === "messages") {
           if (block.type === "text" && block.text) {
             content += block.text;
           } else if (block.type === "tool_use") {
-            toolEvents.push({ type: "tool_start", tool: block.name, args: block.input, timestamp: Date.now() });
+            toolEvents.push({ type: "tool_end", tool: block.name, args: block.input, timestamp: Date.now() });
           }
         }
         if (content || toolEvents.length > 0) {
@@ -90,6 +90,7 @@ let sessionId = payload.resume || null;
 let isFirstTurn = true;
 
 async function runTurn(userPrompt) {
+  emit({ type: "turn_start", timestamp: Date.now() });
   let emittedText = false;
 
   const options = {
@@ -108,11 +109,18 @@ async function runTurn(userPrompt) {
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     maxTurns: 10,
+    includePartialMessages: true,
   };
 
   if (sessionId) {
     options.resume = sessionId;
   }
+
+  // Track active tool_use blocks by content-block index so we can
+  // accumulate streamed input_json_delta chunks and emit tool_end
+  // with the complete parsed args once the block closes.
+  const toolNames = new Map();   // index -> tool name
+  const toolInputs = new Map();  // index -> accumulated JSON string
 
   try {
     for await (const message of query({ prompt: userPrompt, options })) {
@@ -133,22 +141,48 @@ async function runTurn(userPrompt) {
         }
       }
 
-      if ("result" in message) {
+      if (message.type === "stream_event") {
+        const event = message.event;
+
+        if (event.type === "content_block_start") {
+          const cb = event.content_block;
+          if (cb.type === "tool_use") {
+            toolNames.set(event.index, cb.name);
+            toolInputs.set(event.index, "");
+            emit({ type: "tool_start", tool: cb.name, timestamp: Date.now() });
+          }
+        } else if (event.type === "content_block_delta") {
+          const delta = event.delta;
+          if (delta.type === "text_delta") {
+            emit({ type: "text_delta", delta: delta.text, timestamp: Date.now() });
+            emittedText = true;
+          } else if (delta.type === "input_json_delta") {
+            const prev = toolInputs.get(event.index) || "";
+            toolInputs.set(event.index, prev + delta.partial_json);
+          }
+        } else if (event.type === "content_block_stop") {
+          const name = toolNames.get(event.index);
+          if (name) {
+            let args = {};
+            try { args = JSON.parse(toolInputs.get(event.index) || "{}"); } catch {}
+            emit({ type: "tool_end", tool: name, args, timestamp: Date.now() });
+            toolNames.delete(event.index);
+            toolInputs.delete(event.index);
+          }
+        }
+      } else if ("result" in message) {
         if (message.result && !emittedText) {
           emit({ type: "text_delta", delta: message.result, timestamp: Date.now() });
         }
-        emit({ type: "complete", timestamp: Date.now() });
-      } else if (message.type === "assistant") {
-        for (const block of message.message?.content ?? []) {
-          if (block.type === "text" && block.text) {
-            emit({ type: "text_delta", delta: block.text, timestamp: Date.now() });
-            emittedText = true;
-          } else if (block.type === "tool_use") {
-            emit({ type: "tool_start", tool: block.name, args: block.input, timestamp: Date.now() });
-            emit({ type: "tool_end", tool: block.name, timestamp: Date.now() });
-          }
-        }
+        emit({
+          type: "complete",
+          durationMs: message.duration_ms ?? null,
+          numTurns: message.num_turns ?? null,
+          totalCostUsd: message.total_cost_usd ?? null,
+          timestamp: Date.now(),
+        });
       }
+      // AssistantMessage is skipped — content already streamed above.
     }
 
   } catch (e) {

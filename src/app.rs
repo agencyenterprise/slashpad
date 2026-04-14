@@ -297,6 +297,10 @@ pub enum Message {
     /// Emitted by a `time::every` subscription only while a turn is in
     /// flight.
     SpinnerTick,
+    /// User clicked the tool-section expand/collapse chevron on an
+    /// assistant message. Toggles `tools_expanded` on the identified
+    /// message within the active chat.
+    ToggleToolsExpanded(u64),
     /// A user clicked a link inside a rendered markdown message.
     /// Currently a no-op — we just log it. Plumbed because
     /// `iced::widget::markdown::view` returns an `Element<Url>` and
@@ -1254,6 +1258,18 @@ impl Launchpad {
                 Task::none()
             }
 
+            Message::ToggleToolsExpanded(msg_id) => {
+                if let Some(chat) = self
+                    .active_chat_id
+                    .and_then(|cid| self.chats.get_mut(&cid))
+                {
+                    if let Some(msg) = chat.state.messages.iter_mut().find(|m| m.id == msg_id) {
+                        msg.tools_expanded = !msg.tools_expanded;
+                    }
+                }
+                Task::none()
+            }
+
             Message::MarkdownLinkClicked(url) => {
                 // Hand off to the macOS `open` command, which routes
                 // http(s) URLs to the user's default browser. Spawning
@@ -1455,11 +1471,15 @@ impl Launchpad {
             }
             Mode::Chatting => {
                 if let Some(entry) = self.active_chat() {
-                    let ready = matches!(entry.state.status, ChatStatus::Idle);
+                    let is_generating = !matches!(
+                        entry.state.status,
+                        ChatStatus::Idle | ChatStatus::Closed | ChatStatus::Error
+                    );
                     stack = stack.push(ui::theme::divider());
                     stack = stack.push(ui::chat_panel::view(
                         &entry.state.messages,
-                        ready,
+                        is_generating,
+                        entry.state.turn_submitted_at,
                         self.spinner_frame,
                         CHAT_SCROLL_ID.clone(),
                     ));

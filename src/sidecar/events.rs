@@ -40,8 +40,19 @@ pub enum SidecarEvent {
         #[serde(default)]
         timestamp: Option<i64>,
     },
-    /// Turn completed.
+    /// Sidecar is about to call `query()` for a new turn.
+    TurnStart {
+        #[serde(default)]
+        timestamp: Option<i64>,
+    },
+    /// Turn completed — carries result metadata from `SDKResultMessage`.
     Complete {
+        #[serde(rename = "durationMs", default)]
+        duration_ms: Option<u64>,
+        #[serde(rename = "numTurns", default)]
+        num_turns: Option<u32>,
+        #[serde(rename = "totalCostUsd", default)]
+        total_cost_usd: Option<f64>,
         #[serde(default)]
         timestamp: Option<i64>,
     },

@@ -46,7 +46,7 @@ pub async fn load_messages(cwd: &Path, session_id: &str) -> anyhow::Result<Vec<C
     let payload = Payload::messages(session_id.to_string(), cwd.to_string_lossy().to_string());
     let mut spawned = sidecar::spawn(payload)?;
 
-    let mut out = Vec::new();
+    let mut out: Vec<ChatMessageView> = Vec::new();
     let mut next_id: u64 = 1;
     while let Some(event) = spawned.event_rx.recv().await {
         match event {
@@ -61,12 +61,9 @@ pub async fn load_messages(cwd: &Path, session_id: &str) -> anyhow::Result<Vec<C
                 } else {
                     Role::Assistant
                 };
+
+                // Collect blocks from this event.
                 let mut blocks: Vec<ContentBlock> = Vec::new();
-                if let Some(text) = content.as_ref() {
-                    if !text.is_empty() {
-                        blocks.push(ContentBlock::text(text.clone()));
-                    }
-                }
                 if let Some(events) = tool_events {
                     for ev in events {
                         match ev {
@@ -82,23 +79,56 @@ pub async fn load_messages(cwd: &Path, session_id: &str) -> anyhow::Result<Vec<C
                                 result,
                                 ..
                             } => {
-                                blocks.push(ContentBlock::ToolEnd {
-                                    tool,
-                                    args: args.unwrap_or_default(),
-                                    result,
+                                // Replace matching ToolStart, same as the
+                                // streaming path in ChatState::apply_event.
+                                let replaced = blocks.iter_mut().rev().find(|b| {
+                                    matches!(b, ContentBlock::ToolStart { tool: t, .. } if t == &tool)
                                 });
+                                if let Some(slot) = replaced {
+                                    *slot = ContentBlock::ToolEnd {
+                                        tool,
+                                        args: args.unwrap_or_default(),
+                                        result,
+                                    };
+                                } else {
+                                    blocks.push(ContentBlock::ToolEnd {
+                                        tool,
+                                        args: args.unwrap_or_default(),
+                                        result,
+                                    });
+                                }
                             }
                             _ => {}
                         }
                     }
                 }
-                out.push(ChatMessageView {
-                    id: next_id,
-                    role,
-                    blocks,
-                    status: MessageStatus::Complete,
-                });
-                next_id += 1;
+                if let Some(text) = content.as_ref() {
+                    if !text.is_empty() {
+                        blocks.push(ContentBlock::text(text.clone()));
+                    }
+                }
+
+                // Merge consecutive assistant messages into one so all
+                // tool calls from a multi-turn agent run appear under a
+                // single "Did stuff" summary.
+                let merged = role == Role::Assistant
+                    && out.last().is_some_and(|m| m.role == Role::Assistant);
+
+                if merged {
+                    if let Some(prev) = out.last_mut() {
+                        prev.blocks.extend(blocks);
+                    }
+                } else {
+                    out.push(ChatMessageView {
+                        id: next_id,
+                        role,
+                        blocks,
+                        status: MessageStatus::Complete,
+                        tools_expanded: false,
+                        result_duration_ms: None,
+                    });
+                    next_id += 1;
+                }
             }
             SidecarEvent::Complete { .. } | SidecarEvent::Error { .. } => break,
             _ => {}

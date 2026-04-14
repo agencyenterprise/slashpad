@@ -1,37 +1,61 @@
 //! Streaming chat panel.
 
-use iced::widget::{container, markdown, row, scrollable, text, Column};
+use iced::widget::{container, markdown, scrollable, text, Column};
 use iced::{Element, Length};
+use std::time::Instant;
 
 use crate::app::Message;
 use crate::state::{ChatMessageView, ContentBlock, MessageStatus, Role};
 
+/// Extra context passed from app.rs for the streaming indicator.
+pub struct StreamingContext {
+    pub turn_submitted_at: Option<Instant>,
+    pub spinner_frame: u32,
+}
+
 pub fn view<'a>(
     messages: &'a [ChatMessageView],
-    is_agent_ready: bool,
+    is_generating: bool,
+    turn_submitted_at: Option<Instant>,
     spinner_frame: u32,
     scroll_id: scrollable::Id,
 ) -> Element<'a, Message> {
     let mut col: Column<'a, Message> = Column::new().spacing(12).width(Length::Fill);
 
+    let streaming_ctx = if is_generating {
+        Some(StreamingContext {
+            turn_submitted_at,
+            spinner_frame,
+        })
+    } else {
+        None
+    };
+
     for msg in messages {
         match msg.role {
             Role::User => col = col.push(user_bubble(msg)),
-            Role::Assistant => col = col.push(assistant_bubble(msg)),
+            Role::Assistant => col = col.push(assistant_bubble(msg, &streaming_ctx)),
         }
     }
 
-    // Show the animated "Working…" indicator from Submit until the turn
-    // finishes. Covers both the pre-stream window (last message is the
-    // user's prompt) and the streaming window (last message is a partial
-    // assistant bubble).
-    let is_generating = !is_agent_ready
-        && messages.last().is_some_and(|m| {
-            m.role == Role::User
-                || (m.role == Role::Assistant && m.status == MessageStatus::Streaming)
-        });
+    // If generating but no assistant message exists yet (pre-stream
+    // window between submit and first event), show a standalone
+    // "Working..." bar. Only when the last message is a user bubble
+    // (no assistant response at all yet).
     if is_generating {
-        col = col.push(spinner_row(spinner_frame));
+        let awaiting_response = messages
+            .last()
+            .is_some_and(|m| m.role == Role::User);
+
+        if awaiting_response {
+            if let Some(started) = turn_submitted_at {
+                col = col.push(super::tool_line::summary_row_streaming(
+                    0, 0, 0,
+                    started.elapsed(),
+                    spinner_frame,
+                ));
+            }
+        }
     }
 
     container(
@@ -76,52 +100,115 @@ fn user_bubble<'a>(msg: &'a ChatMessageView) -> Element<'a, Message> {
         .into()
 }
 
-fn assistant_bubble<'a>(msg: &'a ChatMessageView) -> Element<'a, Message> {
+fn has_tool_blocks(msg: &ChatMessageView) -> bool {
+    msg.blocks.iter().any(|b| {
+        matches!(
+            b,
+            ContentBlock::ToolStart { .. } | ContentBlock::ToolEnd { .. } | ContentBlock::Error(_)
+        )
+    })
+}
+
+fn is_tool_block(block: &ContentBlock) -> bool {
+    matches!(
+        block,
+        ContentBlock::ToolStart { .. } | ContentBlock::ToolEnd { .. } | ContentBlock::Error(_)
+    )
+}
+
+fn assistant_bubble<'a>(
+    msg: &'a ChatMessageView,
+    streaming_ctx: &Option<StreamingContext>,
+) -> Element<'a, Message> {
     let mut col: Column<'a, Message> = Column::new().spacing(6);
-    for block in &msg.blocks {
-        match block {
-            ContentBlock::Text { parsed, .. } => {
-                // Render via iced's built-in markdown widget, which
-                // handles headings, paragraphs, lists, code blocks,
-                // inline formatting, and links. Items are pre-parsed
-                // on every text_delta inside `app.rs`.
-                let element = markdown::view(
-                    parsed,
-                    markdown::Settings::with_text_size(13),
-                    markdown::Style::from_palette(super::theme::dark_theme().palette()),
-                )
-                .map(Message::MarkdownLinkClicked);
-                col = col.push(element);
+    let has_tools = has_tool_blocks(msg);
+
+    if msg.status == MessageStatus::Streaming {
+        // Streaming: "Working..." bar at the top with tool calls nested
+        // under it, then text blocks below.
+        if let Some(ctx) = streaming_ctx {
+            if let Some(started) = ctx.turn_submitted_at {
+                let (tool_count, error_count, files_changed) =
+                    super::tool_line::count_tools(msg);
+
+                col = col.push(super::tool_line::summary_row_streaming(
+                    tool_count,
+                    error_count,
+                    files_changed,
+                    started.elapsed(),
+                    ctx.spinner_frame,
+                ));
             }
-            ContentBlock::ToolStart { .. }
-            | ContentBlock::ToolEnd { .. }
-            | ContentBlock::Error(_) => {
-                col = col.push(super::tool_line::view(block));
+        }
+
+        // Tool calls appear indented under the Working bar.
+        for block in &msg.blocks {
+            if is_tool_block(block) {
+                col = col.push(super::tool_line::view_expanded(block));
+            } else if let ContentBlock::Text { parsed, .. } = block {
+                col = col.push(render_markdown(parsed));
+            }
+        }
+    } else if has_tools && !msg.tools_expanded {
+        // Complete, collapsed: single summary row replacing all tool blocks.
+        let duration = msg
+            .result_duration_ms
+            .map(std::time::Duration::from_millis);
+        let summary = super::tool_line::compute_summary(msg, duration);
+        let mut summary_emitted = false;
+
+        for block in &msg.blocks {
+            if is_tool_block(block) {
+                if !summary_emitted {
+                    col = col.push(super::tool_line::summary_row(
+                        msg.id, &summary, false,
+                    ));
+                    summary_emitted = true;
+                }
+            } else if let ContentBlock::Text { parsed, .. } = block {
+                col = col.push(render_markdown(parsed));
+            }
+        }
+    } else if has_tools && msg.tools_expanded {
+        // Complete, expanded: summary row + individual tool rows.
+        let duration = msg
+            .result_duration_ms
+            .map(std::time::Duration::from_millis);
+        let summary = super::tool_line::compute_summary(msg, duration);
+        let mut summary_emitted = false;
+
+        for block in &msg.blocks {
+            if is_tool_block(block) {
+                if !summary_emitted {
+                    col = col.push(super::tool_line::summary_row(
+                        msg.id, &summary, true,
+                    ));
+                    summary_emitted = true;
+                }
+                col = col.push(super::tool_line::view_expanded(block));
+            } else if let ContentBlock::Text { parsed, .. } = block {
+                col = col.push(render_markdown(parsed));
+            }
+        }
+    } else {
+        // No tool blocks — just render text.
+        for block in &msg.blocks {
+            if let ContentBlock::Text { parsed, .. } = block {
+                col = col.push(render_markdown(parsed));
             }
         }
     }
+
     col.into()
 }
 
-/// Animated spinner + "Working…" label. Cycles the glyph on each
-/// `SpinnerTick` so the indicator reads as live while a turn is in
-/// flight. Uses ASCII-only spinner characters (`| / - \`) because
-/// iced's default font lacks glyphs for the Unicode Braille block and
-/// most other "fancy" spinner sets, which render as tofu. The glyph is
-/// pinned inside a fixed-width container so the label doesn't shift as
-/// the frame changes (the ASCII glyphs have different widths in the
-/// default proportional font). Colors match the existing theme —
-/// ACCENT for the glyph, MUTED for the label.
-fn spinner_row<'a>(frame: u32) -> Element<'a, Message> {
-    const FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-    let glyph = FRAMES[(frame as usize) % FRAMES.len()];
-    row![
-        container(text(glyph).size(14).color(super::theme::ACCENT))
-            .width(Length::Fixed(12.0))
-            .align_x(iced::Alignment::Center),
-        text("Working…").size(13).color(super::theme::MUTED),
-    ]
-    .spacing(6)
-    .align_y(iced::Alignment::Center)
-    .into()
+fn render_markdown<'a>(
+    parsed: &'a [iced::widget::markdown::Item],
+) -> Element<'a, Message> {
+    markdown::view(
+        parsed,
+        markdown::Settings::with_text_size(13),
+        markdown::Style::from_palette(super::theme::dark_theme().palette()),
+    )
+    .map(Message::MarkdownLinkClicked)
 }
