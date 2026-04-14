@@ -115,7 +115,7 @@ pub fn init() {
 
 #[cfg(target_os = "macos")]
 fn load_icon() -> Result<Icon, Box<dyn std::error::Error>> {
-    let bytes = include_bytes!("../icons/32x32.png");
+    let bytes = include_bytes!("../icons/tray.png");
     let img = image::load_from_memory(bytes)?.into_rgba8();
     let (w, h) = img.dimensions();
     let rgba = img.into_raw();
