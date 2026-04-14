@@ -22,10 +22,13 @@ Update the `version` field in both files — these must stay in sync:
 - `Cargo.toml` (line 3): `version = "X.Y.Z"`
 - `package.json` (line 3): `"version": "X.Y.Z"`
 
-### 3. Commit the version bump
+### 3. Regenerate the lockfile and commit the version bump
+
+Run `cargo check` so that `Cargo.lock` picks up the new version, then commit all three files:
 
 ```bash
-git add Cargo.toml package.json
+cargo check
+git add Cargo.toml Cargo.lock package.json
 git commit -m "Bump version to X.Y.Z"
 git push origin main
 ```
