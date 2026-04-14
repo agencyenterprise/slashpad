@@ -2,7 +2,7 @@
 
 A desktop AI command palette powered by Claude. Think Raycast, but every "extension" is a natural language skill executed by Claude with real tool access.
 
-**Ctrl+Space** → type a command or prompt → Claude does the work.
+Press the global hotkey (default **Ctrl+Space**) → type a command or prompt → Claude does the work.
 
 ## Install
 
@@ -11,7 +11,7 @@ brew install agencyenterprise/tap/slashpad
 brew services start slashpad
 ```
 
-Then press **Ctrl+Space** to open the palette.
+Then press **Ctrl+Space** to open the palette. You can change the hotkey in Settings (click the tray menu icon).
 
 > macOS only. Requires Node.js 18+ (for the Claude Agent SDK sidecar).
 
@@ -75,7 +75,7 @@ Claude handles installing Composio and linking your accounts automatically. The 
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+Space` | Toggle palette |
+| `Ctrl+Space` | Toggle palette (configurable in Settings) |
 | `/` | Browse skills |
 | `↑` `↓` | Navigate list / scroll chat |
 | `Enter` | Run skill, open session, or send prompt |
