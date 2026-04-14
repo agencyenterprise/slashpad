@@ -1325,12 +1325,19 @@ impl Launchpad {
 
         match self.mode {
             Mode::Skills => {
-                stack = stack.push(ui::theme::divider());
-                stack = stack.push(ui::skill_list::view(
-                    &self.filtered_skills,
-                    self.selected_skill_index,
-                    SKILL_LIST_SCROLL_ID.clone(),
-                ));
+                // Once the input has locked onto a concrete skill
+                // (`/<name>` or `/<name> ...`), hide the filter panel.
+                // Continuing to render it would either show a stale
+                // list or — worse — "No matching skills" as soon as
+                // the user starts typing a natural-language argument.
+                if self.locked_skill().is_none() {
+                    stack = stack.push(ui::theme::divider());
+                    stack = stack.push(ui::skill_list::view(
+                        &self.filtered_skills,
+                        self.selected_skill_index,
+                        SKILL_LIST_SCROLL_ID.clone(),
+                    ));
+                }
             }
             Mode::ProjectPicker => {
                 stack = stack.push(ui::theme::divider());
@@ -1396,6 +1403,7 @@ impl Launchpad {
                     .active_chat()
                     .and_then(|e| e.state.session_id.as_deref())
                     .is_some(),
+                skill_locked: self.locked_skill().is_some(),
                 project_path_display: display_project_path(&self.project_path),
             },
         ));
@@ -1427,6 +1435,19 @@ impl Launchpad {
 
     // --- helpers ---
 
+    /// Returns the skill whose name the current input has already
+    /// "committed" to — i.e. `/<name>` exactly, or `/<name> ...`. Used
+    /// to drive the two-step skill-submission UX: when this returns
+    /// `Some`, Enter runs the skill and the skill-list panel is hidden
+    /// (so natural-language arguments don't trigger a "No matching
+    /// skills" message from the fuzzy list).
+    fn locked_skill(&self) -> Option<&Skill> {
+        let rest = self.input.strip_prefix('/')?;
+        self.all_skills.iter().find(|s| {
+            rest == s.name || rest.starts_with(&format!("{} ", s.name))
+        })
+    }
+
     fn handle_submit(&mut self) -> Task<Message> {
         match self.mode {
             Mode::Chatting if !self.input.trim().is_empty() => {
@@ -1445,9 +1466,24 @@ impl Launchpad {
                     Task::none()
                 }
             }
-            Mode::Skills if !self.filtered_skills.is_empty() => {
-                if let Some(skill) = self.filtered_skills.get(self.selected_skill_index).cloned() {
-                    self.start_chat(format!("/{}", skill.name))
+            Mode::Skills => {
+                // Two-step submission: if the input has already
+                // committed to a skill (`/<name>` or `/<name> ...`),
+                // Enter runs it. Otherwise Enter autocompletes the
+                // currently-selected filter match into the input.
+                if self.locked_skill().is_some() {
+                    self.start_chat(self.input.trim().to_string())
+                } else if let Some(skill) =
+                    self.filtered_skills.get(self.selected_skill_index).cloned()
+                {
+                    self.input = format!("/{} ", skill.name);
+                    // Keep `filtered_skills` consistent with the new
+                    // input value, mirroring the InputChanged handler.
+                    let query = format!("{} ", skill.name);
+                    self.filtered_skills =
+                        crate::fuzzy::filter_skills(&self.all_skills, &query);
+                    self.selected_skill_index = 0;
+                    Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())])
                 } else {
                     Task::none()
                 }
@@ -1951,8 +1987,14 @@ impl Launchpad {
             // somehow does.
             Mode::Settings => BASE + keyhints,
             Mode::Skills => {
-                let n = self.filtered_skills.len().max(1) as f32;
-                BASE + (n * ROW).min(MAX_LIST) + keyhints
+                // No filter panel when the input has locked onto a
+                // concrete skill — mirrors the gate in `view()`.
+                if self.locked_skill().is_some() {
+                    BASE + keyhints
+                } else {
+                    let n = self.filtered_skills.len().max(1) as f32;
+                    BASE + (n * ROW).min(MAX_LIST) + keyhints
+                }
             }
             Mode::ProjectPicker => {
                 // Rows are single-line (no description), so they land

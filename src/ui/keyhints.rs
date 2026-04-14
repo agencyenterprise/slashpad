@@ -30,6 +30,10 @@ pub struct KeyhintContext {
     /// the "⌘T Terminal" hint so it only shows when Cmd+T would
     /// actually resolve to a resumable session.
     pub has_session_id: bool,
+    /// True in `Mode::Skills` when the input has already committed to
+    /// a concrete skill (`/<name>` or `/<name> ...`). Swaps the Enter
+    /// hint from "Select" (autocomplete) to "Run".
+    pub skill_locked: bool,
     /// Tilde-abbreviated display of the directory Claude Code is running
     /// in (e.g. `~/.launchpad`). Rendered centered in the bar.
     pub project_path_display: String,
@@ -58,7 +62,8 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
             ("esc", "Dismiss"),
         ],
         Mode::Idle => vec![("↵", "Send"), ("/", "Skills"), ("esc", "Dismiss")],
-        Mode::Skills => vec![("↵", "Run"), ("↑↓", "Navigate"), ("esc", "Dismiss")],
+        Mode::Skills if ctx.skill_locked => vec![("↵", "Run"), ("esc", "Dismiss")],
+        Mode::Skills => vec![("↵", "Select"), ("↑↓", "Navigate"), ("esc", "Dismiss")],
         Mode::ProjectPicker => {
             vec![("↵", "Switch"), ("↑↓", "Navigate"), ("esc", "Back")]
         }
