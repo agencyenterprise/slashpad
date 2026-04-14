@@ -2050,7 +2050,7 @@ impl Launchpad {
     fn visible_active_chat_ids(&self) -> Vec<ChatId> {
         let q = self.idle_filter_query();
         if q.is_empty() {
-            return self.chats.keys().copied().collect();
+            return self.chats.keys().rev().copied().collect();
         }
         let mut scored: Vec<(u32, ChatId)> = Vec::new();
         for (&id, entry) in self.chats.iter() {
