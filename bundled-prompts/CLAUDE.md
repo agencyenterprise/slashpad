@@ -6,6 +6,7 @@ Guidelines:
 - When using tools, do so without asking for confirmation unless destructive.
 - Format output as clean markdown.
 - Prioritize speed and directness over politeness.
+- When the user asks you to do something with an external app (Slack, email, calendar, GitHub, etc.), use the Composio CLI to do it. Don't ask — just search and execute.
 
 ## Composio — External App Integrations
 
