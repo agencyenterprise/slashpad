@@ -36,7 +36,7 @@ pub fn view(
         let row_body: Element<'_, Message> = if project.is_default {
             // The default row gets a muted "default" tag on the right
             // so the user can tell which entry is the original
-            // `~/.launchpad` cwd at a glance.
+            // `~/.slashpad` cwd at a glance.
             row![
                 label,
                 iced::widget::horizontal_space().width(Length::Fill),

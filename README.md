@@ -1,4 +1,4 @@
-# Launchpad
+# Slashpad
 
 A desktop AI command palette powered by Claude. Think Raycast, but every "extension" is a natural language skill executed by Claude with real tool access.
 
@@ -17,7 +17,7 @@ A desktop AI command palette powered by Claude. Think Raycast, but every "extens
 └──────────────────────────────────────────┘
 ```
 
-**Skills** are SKILL.md files (with YAML frontmatter) stored in `~/.launchpad/.claude/skills/`. Each one defines a trigger (`/emails`), a description, and what it does. You create skills by telling Claude what you want — the bundled `skill-creator` skill walks you through it.
+**Skills** are SKILL.md files (with YAML frontmatter) stored in `~/.slashpad/.claude/skills/`. Each one defines a trigger (`/emails`), a description, and what it does. You create skills by telling Claude what you want — the bundled `skill-creator` skill walks you through it.
 
 **Tools** are provided by the Claude Agent SDK (Read, Write, Bash, Glob, Grep, Skill) plus the Composio CLI for external app integrations (Gmail, GitHub, Slack, Calendar, etc.). Claude executes them autonomously during a session.
 
@@ -59,7 +59,7 @@ A desktop AI command palette powered by Claude. Think Raycast, but every "extens
 - **macOS NSPanel** for the floating palette window (appears over full-screen apps)
 - **Multi-monitor aware** — palette appears centered on the cursor's current screen
 - **Session persistence** via the Claude Agent SDK's built-in store
-- **SKILL.md skills** stored under `~/.launchpad/.claude/skills/`
+- **SKILL.md skills** stored under `~/.slashpad/.claude/skills/`
 
 ## Prerequisites
 
@@ -80,7 +80,7 @@ cargo run
 cargo build --release
 ```
 
-The release binary lives at `target/release/launchpad`.
+The release binary lives at `target/release/slashpad`.
 
 ## Configuration
 
@@ -93,7 +93,7 @@ Two ways to provide your Anthropic API key:
 
 ### Skills
 
-Skills live at `~/.launchpad/.claude/skills/<skill-name>/SKILL.md` with YAML frontmatter:
+Skills live at `~/.slashpad/.claude/skills/<skill-name>/SKILL.md` with YAML frontmatter:
 
 ```markdown
 ---
@@ -121,14 +121,14 @@ The bundled `skill-creator` skill (seeded on first run) can generate new skills 
 ## Project Structure
 
 ```
-launchpad/
+slashpad/
 ├── Cargo.toml              # Rust crate manifest
 ├── src/
 │   ├── main.rs             # Entry point
 │   ├── app.rs              # iced Application + state machine
 │   ├── state.rs            # Message/Skill/Session types
 │   ├── hotkey.rs           # global-hotkey registration
-│   ├── settings.rs         # ~/.launchpad/settings.json I/O
+│   ├── settings.rs         # ~/.slashpad/settings.json I/O
 │   ├── skills.rs           # SKILL.md loader + bundled skill seeding
 │   ├── sessions.rs         # list/resume session history
 │   ├── fuzzy.rs            # nucleo-matcher skill filter

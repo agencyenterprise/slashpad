@@ -8,7 +8,7 @@
 //! required.
 //!
 //! Content mirrors the pre-rewrite Tauri tray: left-click opens the settings
-//! panel (which now includes "Show Launcher" and "Quit Launchpad" buttons),
+//! panel (which now includes "Show Launcher" and "Quit Slashpad" buttons),
 //! and a right-click context menu exposes the same three actions directly.
 
 #[cfg(target_os = "macos")]
@@ -21,9 +21,9 @@ use tray_icon::{
 use crate::app::{external_sender, External};
 
 #[cfg(target_os = "macos")]
-const MENU_ID_SHOW: &str = "launchpad.show";
+const MENU_ID_SHOW: &str = "slashpad.show";
 #[cfg(target_os = "macos")]
-const MENU_ID_QUIT: &str = "launchpad.quit";
+const MENU_ID_QUIT: &str = "slashpad.quit";
 
 /// Build the menu-bar tray icon. MUST be called on the main thread after
 /// `app::init_external_bus()` and before iced takes over the run loop.
@@ -77,21 +77,21 @@ pub fn init() {
     let icon = match load_icon() {
         Ok(i) => i,
         Err(e) => {
-            eprintln!("[launchpad] failed to load tray icon: {e}");
+            eprintln!("[slashpad] failed to load tray icon: {e}");
             return;
         }
     };
 
     let menu = Menu::new();
     if let Err(e) = build_menu(&menu) {
-        eprintln!("[launchpad] failed to build tray menu: {e}");
+        eprintln!("[slashpad] failed to build tray menu: {e}");
         return;
     }
 
     let tray = TrayIconBuilder::new()
         .with_icon(icon)
         .with_icon_as_template(true)
-        .with_tooltip("Launchpad")
+        .with_tooltip("Slashpad")
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
         .build();
@@ -99,7 +99,7 @@ pub fn init() {
     let tray = match tray {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("[launchpad] failed to create tray icon: {e}");
+            eprintln!("[slashpad] failed to create tray icon: {e}");
             return;
         }
     };
@@ -137,7 +137,7 @@ fn build_menu(menu: &Menu) -> Result<(), Box<dyn std::error::Error>> {
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&MenuItem::with_id(
         MENU_ID_QUIT,
-        "Quit Launchpad",
+        "Quit Slashpad",
         true,
         None,
     ))?;

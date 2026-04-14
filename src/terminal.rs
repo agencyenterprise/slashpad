@@ -3,7 +3,7 @@
 //! Called from the Cmd+T handler in `app.rs` when the user wants to move
 //! a chat from the palette into a full terminal. The target command is
 //! always `cd <cwd> && claude --resume <session-id>` (or equivalent) —
-//! the sidecar runs in `~/.launchpad`, so resuming there finds the same
+//! the sidecar runs in `~/.slashpad`, so resuming there finds the same
 //! project context Claude Code uses for its own session storage.
 //!
 //! Launches are spawn-and-forget (no `.wait()`): we return `io::Result`

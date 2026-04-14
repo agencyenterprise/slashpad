@@ -6,7 +6,7 @@ use base64::prelude::*;
 use serde::Serialize;
 
 /// Default system prompt bundled into the binary. Seeded to
-/// `~/.launchpad/CLAUDE.md` on first run (see `sidecar::seed_default_claude_md`).
+/// `~/.slashpad/CLAUDE.md` on first run (see `sidecar::seed_default_claude_md`).
 /// The Claude Agent SDK auto-loads this file via `settingSources` in
 /// `runner.mjs` — we don't pass it through the payload.
 pub const DEFAULT_CLAUDE_MD: &str = include_str!("../../bundled-prompts/CLAUDE.md");
@@ -30,7 +30,7 @@ pub struct ChatPayload {
     pub resume: Option<String>,
     /// When true, `runner.mjs` passes `settingSources: ["user", "project"]`
     /// to the Agent SDK so `~/.claude/CLAUDE.md`, skills, and hooks are
-    /// loaded alongside the project-level ones in `~/.launchpad/`.
+    /// loaded alongside the project-level ones in `~/.slashpad/`.
     #[serde(rename = "loadUserSettings")]
     pub load_user_settings: bool,
 }

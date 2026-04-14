@@ -45,7 +45,7 @@ fn snap_to_selection(id: scrollable::Id, index: usize, count: usize) -> Task<Mes
 }
 
 /// Tilde-abbreviate `$HOME` in a path for display (e.g.
-/// `/Users/foo/.launchpad` → `~/.launchpad`). Used by the hotkeys bar to
+/// `/Users/foo/.slashpad` → `~/.slashpad`). Used by the hotkeys bar to
 /// show the current Claude project directory.
 fn display_project_path(path: &std::path::Path) -> String {
     let s = path.to_string_lossy();
@@ -171,7 +171,7 @@ pub enum External {
     },
     /// Tray context-menu "Show Launcher" — same semantics as the hotkey.
     TrayMenuShow,
-    /// Tray context-menu "Quit Launchpad" — graceful shutdown.
+    /// Tray context-menu "Quit Slashpad" — graceful shutdown.
     TrayMenuQuit,
 }
 
@@ -271,7 +271,7 @@ pub enum Message {
     /// toggled. When `true`, the sidecar receives `settingSources:
     /// ["user", "project"]` and the palette skill list is augmented
     /// with skills from `~/.claude/skills/`; when `false`, scope is
-    /// limited to `~/.launchpad/`.
+    /// limited to `~/.slashpad/`.
     LoadUserSettingsToggled(bool),
     /// Tray left-click → open a new settings window anchored below the
     /// tray icon at the given logical-pixel rect.
@@ -281,7 +281,7 @@ pub enum Message {
         tray_w: f64,
         tray_h: f64,
     },
-    /// Tray menu "Quit Launchpad" → drop sidecar, exit process.
+    /// Tray menu "Quit Slashpad" → drop sidecar, exit process.
     QuitRequested,
     /// User clicked the hotkey button in settings → begin listening for a
     /// new chord.
@@ -321,7 +321,7 @@ pub enum Message {
 }
 
 /// Root application state.
-pub struct Launchpad {
+pub struct Slashpad {
     pub input: String,
     pub mode: Mode,
     /// Whether the palette window is currently being displayed on screen.
@@ -394,7 +394,7 @@ pub struct Launchpad {
 
     /// Directory Claude Code runs in (`cwd` passed to the sidecar).
     /// Loaded from `settings.selected_project_path` at startup (falling
-    /// back to `~/.launchpad` if unset or missing), and updated by the
+    /// back to `~/.slashpad` if unset or missing), and updated by the
     /// Cmd+P project picker. New chats spawn with this as their cwd;
     /// in-flight chats keep whatever cwd they were spawned with.
     pub project_path: std::path::PathBuf,
@@ -420,7 +420,7 @@ pub struct Launchpad {
     pub discard_next_input_change: bool,
 }
 
-impl Launchpad {
+impl Slashpad {
     pub fn new() -> (Self, Task<Message>) {
         // `init_external_bus()` is called from `main()` before iced starts,
         // so `external_sender()` is ready for the hotkey forwarder below.
@@ -429,7 +429,7 @@ impl Launchpad {
         let all_skills = skills::load_skills(settings.load_user_settings).unwrap_or_default();
 
         // Resolve the starting project path from persisted settings,
-        // falling back to `~/.launchpad` if unset or if the saved path
+        // falling back to `~/.slashpad` if unset or if the saved path
         // has been deleted since last run.
         let project_path: std::path::PathBuf = settings
             .selected_project_path
@@ -437,7 +437,7 @@ impl Launchpad {
             .map(std::path::PathBuf::from)
             .filter(|p| p.is_dir())
             .unwrap_or_else(|| {
-                sidecar::launchpad_home().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                sidecar::slashpad_home().unwrap_or_else(|_| std::path::PathBuf::from("."))
             });
 
         // Spin up the hotkey manager — forwards presses into the external bus.
@@ -450,7 +450,7 @@ impl Launchpad {
                     }
                 });
             }
-            Err(e) => eprintln!("[launchpad] failed to register hotkey: {e}"),
+            Err(e) => eprintln!("[slashpad] failed to register hotkey: {e}"),
         }
 
         // Kick off a background load of recent sessions for the idle
@@ -518,7 +518,7 @@ impl Launchpad {
             crate::tray::init();
         });
 
-        // Palette NSPanel treatment: swap the class to `LaunchpadPanel`,
+        // Palette NSPanel treatment: swap the class to `SlashpadPanel`,
         // set the non-activating style mask / modal panel level /
         // fullscreen-auxiliary collection behavior, then orderOut so the
         // window starts hidden. Runs as an iced task so we can target the
@@ -552,9 +552,9 @@ impl Launchpad {
 
     pub fn title(&self, window_id: iced::window::Id) -> String {
         if Some(window_id) == self.settings_window_id {
-            "Launchpad Settings".to_string()
+            "Slashpad Settings".to_string()
         } else {
-            "Launchpad".to_string()
+            "Slashpad".to_string()
         }
     }
 
@@ -1150,7 +1150,7 @@ impl Launchpad {
                     crate::secrets::set_api_key(&self.api_key_input)
                 };
                 if let Err(e) = result {
-                    eprintln!("[launchpad] failed to persist api key: {e}");
+                    eprintln!("[slashpad] failed to persist api key: {e}");
                 }
                 Task::none()
             }
@@ -1163,7 +1163,7 @@ impl Launchpad {
             Message::ClearApiKey => {
                 self.api_key_input.clear();
                 if let Err(e) = crate::secrets::delete_api_key() {
-                    eprintln!("[launchpad] failed to clear api key: {e}");
+                    eprintln!("[slashpad] failed to clear api key: {e}");
                 }
                 self.api_key_visible = false;
                 Task::none()
@@ -1183,7 +1183,7 @@ impl Launchpad {
             Message::LoadUserSettingsToggled(enabled) => {
                 self.settings.load_user_settings = enabled;
                 if let Err(e) = self.settings.save() {
-                    eprintln!("[launchpad] failed to save loadUserSettings: {e}");
+                    eprintln!("[slashpad] failed to save loadUserSettings: {e}");
                 }
                 // Reload the palette's skill list so the new scope
                 // takes effect immediately without restarting the app.
@@ -1280,7 +1280,7 @@ impl Launchpad {
                     .arg(url.as_str())
                     .spawn()
                 {
-                    eprintln!("[launchpad] failed to open link {url}: {e}");
+                    eprintln!("[slashpad] failed to open link {url}: {e}");
                 }
                 Task::none()
             }
@@ -1305,7 +1305,7 @@ impl Launchpad {
                         // case too, so this branch is mostly defense
                         // against a racey keypress.
                         eprintln!(
-                            "[launchpad] Cmd+T ignored: active chat has no session_id yet"
+                            "[slashpad] Cmd+T ignored: active chat has no session_id yet"
                         );
                         return Task::none();
                     }
@@ -1317,7 +1317,7 @@ impl Launchpad {
                     &session_id,
                 ) {
                     eprintln!(
-                        "[launchpad] failed to open session {session_id} in {:?}: {e}",
+                        "[slashpad] failed to open session {session_id} in {:?}: {e}",
                         self.settings.preferred_terminal
                     );
                 }
@@ -1327,7 +1327,7 @@ impl Launchpad {
             Message::PreferredTerminalChanged(term) => {
                 self.settings.preferred_terminal = term;
                 if let Err(e) = self.settings.save() {
-                    eprintln!("[launchpad] failed to save preferred terminal: {e}");
+                    eprintln!("[slashpad] failed to save preferred terminal: {e}");
                 }
                 Task::none()
             }
@@ -1606,7 +1606,7 @@ impl Launchpad {
                 self.settings.selected_project_path =
                     Some(picked.path.to_string_lossy().into_owned());
                 if let Err(e) = self.settings.save() {
-                    eprintln!("[launchpad] failed to persist selected project: {e}");
+                    eprintln!("[slashpad] failed to persist selected project: {e}");
                 }
                 self.mode = Mode::Idle;
                 // Always land on a clean Idle view for the new
@@ -2285,7 +2285,7 @@ impl Launchpad {
         // No class swap! winit's own `WinitWindow` class already
         // overrides `canBecomeKeyWindow` to return `true`, so the
         // settings window is key-eligible out of the box. Swapping
-        // the class to `LaunchpadPanel` was crashing iced's close
+        // the class to `SlashpadPanel` was crashing iced's close
         // path — its internal cleanup tries to reach methods that
         // live on `WinitWindow`'s class, and the swap hides them.
         //
@@ -2342,4 +2342,4 @@ fn external_subscription_stream() -> impl Stream<Item = Message> {
 
 /// Stable iced text_input ID used for focusing the palette input.
 pub(crate) static INPUT_ID: std::sync::LazyLock<text_input::Id> =
-    std::sync::LazyLock::new(|| text_input::Id::new("launchpad-command-input"));
+    std::sync::LazyLock::new(|| text_input::Id::new("slashpad-command-input"));

@@ -115,7 +115,7 @@ pub fn divider<Message: 'static>() -> iced::Element<'static, Message> {
 
 pub fn dark_theme() -> Theme {
     Theme::custom(
-        "Launchpad Dark".to_string(),
+        "Slashpad Dark".to_string(),
         Palette {
             background: SURFACE_0,
             text: TEXT,
@@ -148,7 +148,7 @@ pub fn palette_window_settings() -> iced::window::Settings {
 /// by the caller (so the tray-click handler can anchor it under the tray
 /// icon). Mirrors the pre-rewrite Tauri `TraySettings` window dimensions.
 ///
-/// The settings window is intentionally NOT put through our `LaunchpadPanel`
+/// The settings window is intentionally NOT put through our `SlashpadPanel`
 /// NSPanel subclass — repeated attempts to class-swap it crashed inside
 /// AppKit's redraw notification machinery, and we haven't root-caused the
 /// difference from the palette's (working) NSPanel path yet. Relying on

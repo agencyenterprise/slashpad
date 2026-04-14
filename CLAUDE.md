@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Launchpad is a desktop AI command palette (think Raycast) built as a **native Rust binary** using **iced** (GUI) + a **Node.js sidecar** that wraps the Claude Agent SDK. Users press **Ctrl+Space** to summon a floating palette, type a command or natural language prompt, and Claude executes it with tool access.
+Slashpad is a desktop AI command palette (think Raycast) built as a **native Rust binary** using **iced** (GUI) + a **Node.js sidecar** that wraps the Claude Agent SDK. Users press **Ctrl+Space** to summon a floating palette, type a command or natural language prompt, and Claude executes it with tool access.
 
 There is **no webview** and **no React/TypeScript**. The previous Tauri + React implementation was rewritten to be pure Rust — everything except the sidecar.
 
@@ -15,7 +15,7 @@ There is **no webview** and **no React/TypeScript**. The previous Tauri + React 
 ```bash
 npm install              # Install sidecar's Node dependencies (@anthropic-ai/claude-agent-sdk)
 cargo run                # Development build + run
-cargo build --release    # Optimized release binary at target/release/launchpad
+cargo build --release    # Optimized release binary at target/release/slashpad
 cargo check              # Fast type-check feedback loop
 ```
 
@@ -32,8 +32,8 @@ There are no automated tests.
 - `app.rs` — iced `Application` impl. Central state machine ported from the old `usePalette.ts`. Owns the external event bus (hotkey + sidecar events funneled into iced via `Subscription::run`).
 - `state.rs` — `Mode` (Idle/Skills/Chatting/Settings), `ChatMessageView`, `ContentBlock`, `Skill`, `SessionInfo`.
 - `hotkey.rs` — `global-hotkey` registration. Runs a blocking thread that forwards presses into an `UnboundedSender`. Has a `parse_hotkey` function matching the old `HotkeyRecorder.tsx` string format.
-- `settings.rs` — `~/.launchpad/settings.json` (serde_json-backed).
-- `skills.rs` — SKILL.md loader (walks `~/.launchpad/.claude/skills`, parses frontmatter with `serde_yaml`). Also seeds `skill-creator` via `include_dir!("bundled-skills/skill-creator")`.
+- `settings.rs` — `~/.slashpad/settings.json` (serde_json-backed).
+- `skills.rs` — SKILL.md loader (walks `~/.slashpad/.claude/skills`, parses frontmatter with `serde_yaml`). Also seeds `skill-creator` via `include_dir!("bundled-skills/skill-creator")`.
 - `sessions.rs` — One-shot sidecar runs in `list`/`messages` mode to fetch recent sessions and past session messages.
 - `fuzzy.rs` — `nucleo-matcher` wrapper replacing Fuse.js.
 - `tray.rs` — menu-bar tray icon (`tray-icon` → `NSStatusItem`). Created on the main thread in `main()` before iced starts; click/menu events are forwarded into the `External` bus.
@@ -57,7 +57,7 @@ Modes: `Idle` → `Skills` (when input starts with `/`) → `Chatting` (after su
 
 **All NSPanel/NSWindow ops MUST run on the main thread.** iced's event loop runs on the main thread, so Message handlers are safe. But background tasks (tokio::spawn, std::thread::spawn) that need to touch windows must hop to the main thread via `platform::macos::dispatch_main_async(|| { ... })`, which wraps `dispatch_async_f(_dispatch_main_q, ...)`.
 
-The 200ms post-launch NSPanel wrapping hook in `Launchpad::new()` uses `std::thread::spawn` + `dispatch_main_async` to safely apply the style mask once winit has finished creating the window.
+The 200ms post-launch NSPanel wrapping hook in `Slashpad::new()` uses `std::thread::spawn` + `dispatch_main_async` to safely apply the style mask once winit has finished creating the window.
 
 ## Sidecar IPC schema
 

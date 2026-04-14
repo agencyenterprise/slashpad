@@ -33,7 +33,7 @@ pub enum FollowUp {
 }
 
 pub fn runner_path() -> PathBuf {
-    // Default: launchpad's own project dir under $HOME/dev/launchpad. In production
+    // Default: slashpad's own project dir under $HOME/dev/slashpad. In production
     // installs this would come from a bundled resource; for the dev path we can
     // resolve it relative to the current working directory.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

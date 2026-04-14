@@ -40,7 +40,7 @@ pub struct KeyhintContext {
     /// hint from "Select" (autocomplete) to "Run".
     pub skill_locked: bool,
     /// Tilde-abbreviated display of the directory Claude Code is running
-    /// in (e.g. `~/.launchpad`). Rendered centered in the bar.
+    /// in (e.g. `~/.slashpad`). Rendered centered in the bar.
     pub project_path_display: String,
 }
 

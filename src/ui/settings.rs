@@ -292,7 +292,7 @@ pub fn view<'a>(
                 ..Default::default()
             }),
         iced::widget::horizontal_space(),
-        button(text("Quit Launchpad").size(12).color(super::theme::TEXT))
+        button(text("Quit Slashpad").size(12).color(super::theme::TEXT))
             .on_press(Message::QuitRequested)
             .padding([8, 14])
             .style(|_, _| iced::widget::button::Style {

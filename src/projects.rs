@@ -23,8 +23,8 @@ pub struct ProjectInfo {
     /// Modification time of the `~/.claude/projects/<mangled>` subdir,
     /// used as a cheap proxy for "most recently active" when sorting.
     pub last_modified: SystemTime,
-    /// True for the built-in `~/.launchpad` entry — the project
-    /// Launchpad ran in before the user could pick one. Pinned first
+    /// True for the built-in `~/.slashpad` entry — the project
+    /// Slashpad ran in before the user could pick one. Pinned first
     /// in the unfiltered list and rendered with a "default" label so
     /// the user always has a way back to it.
     pub is_default: bool,
@@ -87,27 +87,27 @@ fn scan_sync() -> anyhow::Result<Vec<ProjectInfo>> {
     // user on a likely target immediately.
     out.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
 
-    // Pin `~/.launchpad` — the pre-project-picker hardcoded cwd — as
+    // Pin `~/.slashpad` — the pre-project-picker hardcoded cwd — as
     // the first entry so the user always has a way back to the
     // default. Flag it so the picker can render a label. If the scan
-    // already surfaced `~/.launchpad`, promote that entry in place;
+    // already surfaced `~/.slashpad`, promote that entry in place;
     // otherwise synthesize one even if the dir hasn't been run yet
     // (seed_default_claude_md creates it on startup, so it should
     // always exist — but fall back to the path as-is if not).
-    let launchpad = PathBuf::from(&home).join(".launchpad");
-    if let Some(pos) = out.iter().position(|p| p.path == launchpad) {
+    let slashpad = PathBuf::from(&home).join(".slashpad");
+    if let Some(pos) = out.iter().position(|p| p.path == slashpad) {
         let mut existing = out.remove(pos);
         existing.is_default = true;
         out.insert(0, existing);
     } else {
-        let last_modified = std::fs::metadata(&launchpad)
+        let last_modified = std::fs::metadata(&slashpad)
             .and_then(|m| m.modified())
             .unwrap_or(SystemTime::UNIX_EPOCH);
         out.insert(
             0,
             ProjectInfo {
-                display: display_path(&launchpad, &home),
-                path: launchpad,
+                display: display_path(&slashpad, &home),
+                path: slashpad,
                 last_modified,
                 is_default: true,
             },

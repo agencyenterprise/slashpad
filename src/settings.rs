@@ -1,4 +1,4 @@
-//! Persistent settings stored at `~/.launchpad/settings.json`.
+//! Persistent settings stored at `~/.slashpad/settings.json`.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 const DEFAULT_HOTKEY: &str = "Ctrl+Space";
 
-/// Which terminal emulator Launchpad should use when opening a chat
+/// Which terminal emulator Slashpad should use when opening a chat
 /// session in the Claude Code CLI. Rendered in the settings dropdown
 /// and consumed by `terminal::open_claude_resume`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,8 +45,8 @@ impl PreferredTerminal {
     /// Signal priority:
     ///
     /// 1. `$TERM_PROGRAM` — set by every mainstream terminal. Strong
-    ///    when present (Launchpad was clearly launched from a shell
-    ///    in that terminal); usually unset when Launchpad is started
+    ///    when present (Slashpad was clearly launched from a shell
+    ///    in that terminal); usually unset when Slashpad is started
     ///    via hotkey/tray because `launchd` hands down an empty env.
     /// 2. `/Applications/<name>.app` on disk — if the user went to
     ///    the trouble of installing a non-default terminal, that's
@@ -138,13 +138,13 @@ pub struct AppSettings {
     /// hooks from `~/.claude/` (via the Agent SDK's `settingSources:
     /// ["user", "project"]`) and the palette's skill list is augmented
     /// with skills from `~/.claude/skills/`. Off by default so a fresh
-    /// install stays isolated to Launchpad's own `~/.launchpad/` scope.
+    /// install stays isolated to Slashpad's own `~/.slashpad/` scope.
     #[serde(default, rename = "loadUserSettings")]
     pub load_user_settings: bool,
     /// Directory Claude Code runs in (`cwd` passed to the sidecar).
     /// Chosen via the Cmd+P project picker; persists across restarts
     /// so the user stays in their last-selected project. `None` means
-    /// fall back to `~/.launchpad` (the default). A saved path that
+    /// fall back to `~/.slashpad` (the default). A saved path that
     /// no longer exists on disk is ignored at load time.
     #[serde(default, rename = "selectedProjectPath")]
     pub selected_project_path: Option<String>,
@@ -172,7 +172,7 @@ impl Default for AppSettings {
 
 fn settings_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let dir = PathBuf::from(home).join(".launchpad");
+    let dir = PathBuf::from(home).join(".slashpad");
     let _ = std::fs::create_dir_all(&dir);
     dir.join("settings.json")
 }
@@ -214,7 +214,7 @@ impl AppSettings {
         if !had_preferred_terminal {
             settings.preferred_terminal = PreferredTerminal::detect();
             if let Err(e) = settings.save() {
-                eprintln!("[launchpad] failed to persist detected terminal: {e}");
+                eprintln!("[slashpad] failed to persist detected terminal: {e}");
             }
         }
 
@@ -224,7 +224,7 @@ impl AppSettings {
             // do NOT migrate it into the keychain — the user re-enters
             // it through the Settings UI.
             if let Err(e) = settings.save() {
-                eprintln!("[launchpad] failed to scrub legacy apiKey: {e}");
+                eprintln!("[slashpad] failed to scrub legacy apiKey: {e}");
             }
         }
 

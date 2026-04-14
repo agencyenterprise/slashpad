@@ -1,10 +1,10 @@
 # Handoff — Rust Rewrite Status
 
-This file captures the state of the Rust rewrite of Launchpad so a fresh Claude Code session can pick up without reconstruction. Read this **before** `CLAUDE.md` if you're new to the repo.
+This file captures the state of the Rust rewrite of Slashpad so a fresh Claude Code session can pick up without reconstruction. Read this **before** `CLAUDE.md` if you're new to the repo.
 
 ## TL;DR
 
-Launchpad was rewritten from **Tauri + React + Node sidecar** to **native Rust (iced + winit + wgpu) + unchanged Node sidecar**. The core interaction — hotkey → palette appears → skills list → keyboard input → float over fullscreen — is now **manually verified working**. The agent/chat side of the app (submit, streaming, tool calls, session resume, settings panel) is still untested and needs a smoke pass.
+Slashpad was rewritten from **Tauri + React + Node sidecar** to **native Rust (iced + winit + wgpu) + unchanged Node sidecar**. The core interaction — hotkey → palette appears → skills list → keyboard input → float over fullscreen — is now **manually verified working**. The agent/chat side of the app (submit, streaming, tool calls, session resume, settings panel) is still untested and needs a smoke pass.
 
 - **Builds**: `cargo build` — 0 warnings. `cargo clippy -- -D warnings` — passes. Hooks at `.claude/hooks/cargo-{check,clippy}.sh` point at the root `Cargo.toml`.
 - **Size**: ~2,400 LOC Rust across 25 files in `src/`.
@@ -18,7 +18,7 @@ Manually smoke-tested end-to-end, works as expected:
 - `Ctrl+Space` summons the palette; pressing again hides it.
 - Palette appears horizontally centered on the cursor's current monitor, ~20% from the top. Multi-monitor works.
 - Palette floats over fullscreen apps (Safari/Xcode in fullscreen Space).
-- Custom `LaunchpadPanel` subclass of `NSPanel` (registered at runtime via `objc2::declare::ClassBuilder` in `src/platform/macos.rs`) overrides `canBecomeKeyWindow`/`canBecomeMainWindow` → keystrokes reach the iced text input.
+- Custom `SlashpadPanel` subclass of `NSPanel` (registered at runtime via `objc2::declare::ClassBuilder` in `src/platform/macos.rs`) overrides `canBecomeKeyWindow`/`canBecomeMainWindow` → keystrokes reach the iced text input.
 - Skill list renders immediately on show (palette opens pre-filled with `/` in `Mode::Skills`).
 - Dynamic window resize via `iced::window::resize` in response to mode transitions — base 90px → Skills list height → chat height → back to base on Esc.
 - NSPanel class swap + style mask + collection behavior applied both via the 200ms post-launch hook and on every `show_palette()` (self-healing).
@@ -33,7 +33,7 @@ The "front" of the app works; the "back" (anything past Submit) hasn't been driv
 4. **Session resume.** Close the palette, reopen it with `Ctrl+Space` with empty input — does the recent-sessions list show the session you just created? Does Enter resume it with history? History loads via a one-shot `runner.mjs messages <sessionId>` run; if it fails, the chat appears empty with no banner.
 5. **Esc cancels chat.** During a streaming chat, press Esc — does the chat end, sidecar get killed (via `SpawnedSidecar` drop → tokio `kill_on_drop`), and the view return to idle?
 6. **Blur auto-hides.** Click outside the palette while not chatting — does it hide? The subscription listens to `iced::window::Event::Unfocused`. During a chat it should NOT hide.
-7. **Settings panel.** Type `/settings` — does the panel appear with the current hotkey displayed? Does typing an API key and clicking Save persist to `~/.launchpad/settings.json`?
+7. **Settings panel.** Type `/settings` — does the panel appear with the current hotkey displayed? Does typing an API key and clicking Save persist to `~/.slashpad/settings.json`?
 
 ## TODO — known gaps (ordered by priority)
 
@@ -44,9 +44,9 @@ Each item has enough detail to pick up without asking the user.
 Items 1–3 **landed this session** (see plan file `~/.claude/plans/floofy-questing-crane.md`). Left: one item.
 
 1. ~~Position palette on the cursor's monitor.~~ ✅ `platform::macos::cursor_palette_position(width)` computes winit-space coords; `show_palette()` batches `iced::window::move_to` on the cached `window_id`.
-2. ~~Dynamic window resize based on mode.~~ ✅ `Launchpad::target_height()` ports the `usePalette.ts` heuristic; `resize_task()` is batched into every height-changing update branch.
+2. ~~Dynamic window resize based on mode.~~ ✅ `Slashpad::target_height()` ports the `usePalette.ts` heuristic; `resize_task()` is batched into every height-changing update branch.
 3. ~~Text input focus after hotkey-show.~~ ✅ `show_palette()` returns a `Task::batch` including `text_input::focus(INPUT_ID.clone())`.
-4. **First-show NSPanel race.** Still not fixed. The post-launch hook in `Launchpad::new()` has a hardcoded 200ms sleep, then calls `first_app_window_ptr()` and wraps the window. If iced/winit creates the NSWindow >200ms after `new()` returns, `first_app_window_ptr()` returns null and nothing gets wrapped. The self-healing path is `show_palette()` — which re-applies the style each hotkey press — so in practice the second `Ctrl+Space` always works even if the first missed. If you see a visible flash, either (a) increase the sleep, or (b) use `iced::window::run_with_handle(id, |handle| { ... })` to grab the NSWindow pointer at a guaranteed-safe moment.
+4. **First-show NSPanel race.** Still not fixed. The post-launch hook in `Slashpad::new()` has a hardcoded 200ms sleep, then calls `first_app_window_ptr()` and wraps the window. If iced/winit creates the NSWindow >200ms after `new()` returns, `first_app_window_ptr()` returns null and nothing gets wrapped. The self-healing path is `show_palette()` — which re-applies the style each hotkey press — so in practice the second `Ctrl+Space` always works even if the first missed. If you see a visible flash, either (a) increase the sleep, or (b) use `iced::window::run_with_handle(id, |handle| { ... })` to grab the NSWindow pointer at a guaranteed-safe moment.
 
 ### Priority 2 — polish
 
@@ -63,15 +63,15 @@ Items 1–3 **landed this session** (see plan file `~/.claude/plans/floofy-quest
 
 7. **Rich markdown rendering in chat panel.** `src/markdown.rs` flattens everything to plain text. Build a proper renderer that walks `pulldown-cmark::Parser` events and emits an `iced::Element` tree: headings → larger bold text, code blocks → monospace container with `SURFACE_0` background, inline code → inline monospace, lists → indented bullets, links → clickable (iced has no native link widget; use a button styled like text).
 
-8. **Fix runner.mjs path for release builds.** `src/sidecar/process.rs::runner_path()` resolves `agent/runner.mjs` relative to `std::env::current_dir()`. This works with `cargo run` but will break when the binary is installed to `/Applications/Launchpad.app/Contents/MacOS/launchpad`. Fix: resolve relative to the executable path via `std::env::current_exe()?.parent().unwrap().join("agent/runner.mjs")`, and bundle `agent/` alongside the binary in the `.app`.
+8. **Fix runner.mjs path for release builds.** `src/sidecar/process.rs::runner_path()` resolves `agent/runner.mjs` relative to `std::env::current_dir()`. This works with `cargo run` but will break when the binary is installed to `/Applications/Slashpad.app/Contents/MacOS/slashpad`. Fix: resolve relative to the executable path via `std::env::current_exe()?.parent().unwrap().join("agent/runner.mjs")`, and bundle `agent/` alongside the binary in the `.app`.
 
 9. **Graceful shutdown.** Old app had `sessionManager.killAll()` on `beforeunload`. Rust app relies on tokio `kill_on_drop` which fires when the `SpawnedSidecar` struct is dropped. This works on SIGINT but not on Cmd+Q from the dock (if there were a dock icon). Consider handling `iced::window::Event::CloseRequested` in the subscription and sending `FollowUp::Close` to the sidecar before exiting.
 
 ### Priority 3 — nice-to-have
 
 10. **Packaging as `.app`.** Install `cargo-bundle`, add a `[package.metadata.bundle]` section to `Cargo.toml` with:
-    - `name = "Launchpad"`
-    - `identifier = "com.launchpad.app"`
+    - `name = "Slashpad"`
+    - `identifier = "com.slashpad.app"`
     - `icon = ["icons/icon.icns"]`
     - `category = "Productivity"`
     - `osx_info_plist_exts = ["NSApp-LSUIElement: true"]` (to match the `NSApplicationActivationPolicyAccessory` runtime setting)
@@ -81,7 +81,7 @@ Items 1–3 **landed this session** (see plan file `~/.claude/plans/floofy-quest
 
 12. **Esc during hotkey recording** should cancel recording. Depends on TODO #6 landing first.
 
-13. **Tune `target_height` for Settings mode.** Currently `Mode::Settings` uses the same `BASE + CHAT = 570` height as Chatting. The Settings form is probably smaller; measure and adjust in `src/app.rs::Launchpad::target_height()`.
+13. **Tune `target_height` for Settings mode.** Currently `Mode::Settings` uses the same `BASE + CHAT = 570` height as Chatting. The Settings form is probably smaller; measure and adjust in `src/app.rs::Slashpad::target_height()`.
 
 ## Gotchas — non-obvious things to know
 
@@ -110,11 +110,11 @@ Items 1–3 **landed this session** (see plan file `~/.claude/plans/floofy-quest
 
 9. **Session resume from disk can fail silently.** `resume_session` spawns a one-shot `messages` mode sidecar. If it returns empty or errors, the chat panel is empty with no banner. Consider adding an error indicator to `SessionInfo` loading.
 
-10. **Custom `LaunchpadPanel` NSPanel subclass.** `src/platform/macos.rs::launchpad_panel_class()` registers a subclass of `NSPanel` at runtime via `objc2::declare::ClassBuilder`, overriding `canBecomeKeyWindow` and `canBecomeMainWindow` to return `YES`. `apply_palette_style` uses `object_setClass` to swap iced/winit's plain `NSWindow` into this subclass. **This is load-bearing**: without it, (a) `NSWindowStyleMaskNonactivatingPanel` is silently ignored because iced's window isn't an NSPanel, (b) the palette won't float over fullscreen apps, and (c) keyboard input stops reaching the first responder because borderless nonactivating panels refuse to become key by default. `tauri-nspanel` does the same thing in the old codebase via its `tauri_panel!` macro. Don't revert it.
+10. **Custom `SlashpadPanel` NSPanel subclass.** `src/platform/macos.rs::slashpad_panel_class()` registers a subclass of `NSPanel` at runtime via `objc2::declare::ClassBuilder`, overriding `canBecomeKeyWindow` and `canBecomeMainWindow` to return `YES`. `apply_palette_style` uses `object_setClass` to swap iced/winit's plain `NSWindow` into this subclass. **This is load-bearing**: without it, (a) `NSWindowStyleMaskNonactivatingPanel` is silently ignored because iced's window isn't an NSPanel, (b) the palette won't float over fullscreen apps, and (c) keyboard input stops reaching the first responder because borderless nonactivating panels refuse to become key by default. `tauri-nspanel` does the same thing in the old codebase via its `tauri_panel!` macro. Don't revert it.
 
-11. **objc2 0.5 `MethodImplementation` HRTB gotcha.** When registering Objective-C methods via `ClassBuilder::add_method`, the receiver type must be `*mut AnyObject` (raw pointer), not `&AnyObject`. The reference form triggers a `for<'a>` higher-rank lifetime bound that objc2 0.5's `MethodImplementation` impl cannot satisfy (the impl is for a single `'0`, not HRTB). Raw pointers have no lifetime and work cleanly. See `launchpad_panel_class()` for the canonical pattern.
+11. **objc2 0.5 `MethodImplementation` HRTB gotcha.** When registering Objective-C methods via `ClassBuilder::add_method`, the receiver type must be `*mut AnyObject` (raw pointer), not `&AnyObject`. The reference form triggers a `for<'a>` higher-rank lifetime bound that objc2 0.5's `MethodImplementation` impl cannot satisfy (the impl is for a single `'0`, not HRTB). Raw pointers have no lifetime and work cleanly. See `slashpad_panel_class()` for the canonical pattern.
 
-12. **`window_id` is cached, not guaranteed.** `Launchpad::window_id: Option<iced::window::Id>` is populated asynchronously via `iced::window::get_oldest().map(Message::WindowIdResolved)` in the init task. There's a theoretical race where a hotkey press before iced's first frame would show the palette without iced-level resize/move (degraded but functional; the next press works). If you see first-show sizing glitches, investigate here.
+12. **`window_id` is cached, not guaranteed.** `Slashpad::window_id: Option<iced::window::Id>` is populated asynchronously via `iced::window::get_oldest().map(Message::WindowIdResolved)` in the init task. There's a theoretical race where a hotkey press before iced's first frame would show the palette without iced-level resize/move (degraded but functional; the next press works). If you see first-show sizing glitches, investigate here.
 
 13. **cargo-watch rebuild lifecycle on macOS.** Plain `cargo watch -x run` leaves orphan binaries because iced/winit's NSApplication event loop ignores SIGHUP (cargo-watch's default kill signal). The orphan holds the global hotkey registration, so the newly-built binary fails `manager.register()` silently and pressing Ctrl+Space still triggers the stale binary. Use `cargo watch --signal SIGINT -x run` instead — winit treats SIGINT as a close request and exits cleanly. Eventual real fix is TODO #9 (graceful shutdown).
 
@@ -126,7 +126,7 @@ Read `CLAUDE.md` for the full tour. The essentials:
 
 - **Single binary**, `cargo run` launches it.
 - **Three layers**: iced UI (`src/app.rs`, `src/ui/`) → platform services (`src/hotkey.rs`, `src/platform/macos.rs`, `src/settings.rs`, `src/skills.rs`) → sidecar client (`src/sidecar/`).
-- **State machine** (`src/app.rs::Launchpad`) is the direct port of `usePalette.ts`. Mode: `Idle` → `Skills` → `Chatting` → `Settings`.
+- **State machine** (`src/app.rs::Slashpad`) is the direct port of `usePalette.ts`. Mode: `Idle` → `Skills` → `Chatting` → `Settings`.
 - **External event bus** (`src/app.rs::External` + the `EXTERNAL_RX`/`EXTERNAL_TX` statics) bridges non-iced threads (hotkey, sidecar) into the iced update loop via a `Subscription::run`.
 - **Node sidecar** (`agent/runner.mjs`) is **unchanged** and is the only way to talk to the Claude Agent SDK. Don't touch it.
 
@@ -158,14 +158,14 @@ Both point at the repo-root `Cargo.toml`. If you move the manifest, update both 
 ## File map
 
 ```
-launchpad/
+slashpad/
 ├── Cargo.toml, Cargo.lock
 ├── src/
 │   ├── main.rs               # entry point, tokio runtime, iced::application
-│   ├── app.rs                # Launchpad state + Message enum + update/view/subscription
+│   ├── app.rs                # Slashpad state + Message enum + update/view/subscription
 │   ├── state.rs              # Mode, Skill, ChatMessageView, ContentBlock, SessionInfo
 │   ├── hotkey.rs             # global-hotkey parse + register + poller thread
-│   ├── settings.rs           # ~/.launchpad/settings.json serde I/O
+│   ├── settings.rs           # ~/.slashpad/settings.json serde I/O
 │   ├── skills.rs             # SKILL.md loader + bundled skill seeding
 │   ├── sessions.rs           # list_recent() + load_messages() via sidecar one-shots
 │   ├── fuzzy.rs              # nucleo-matcher wrapper for skill filter
@@ -176,7 +176,7 @@ launchpad/
 │   │   ├── macos.rs          # NSPanel wrap, dispatch_main_async, cursor monitor
 │   │   └── stub.rs           # non-macOS no-ops
 │   ├── sidecar/
-│   │   ├── mod.rs            # public SpawnedSidecar + launchpad_home()
+│   │   ├── mod.rs            # public SpawnedSidecar + slashpad_home()
 │   │   ├── events.rs         # SidecarEvent serde enum (matches runner.mjs JSONL)
 │   │   ├── payload.rs        # Chat/List/Messages payload + base64 encoding + SYSTEM_PROMPT
 │   │   └── process.rs        # tokio::process + stdin writer + stdout reader tasks

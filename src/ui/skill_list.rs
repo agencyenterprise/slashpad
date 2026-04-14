@@ -72,7 +72,7 @@ pub fn view(
     // `max_height` bounds the scrollable so it scrolls once content
     // exceeds the cap, while allowing the panel to shrink to content
     // (no dead space) for short lists. Matches `MAX_LIST` in
-    // `Launchpad::target_height`.
+    // `Slashpad::target_height`.
     container(
         scrollable(col)
             .id(scroll_id)

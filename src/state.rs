@@ -16,7 +16,7 @@ pub enum Mode {
     Settings,
     /// Cmd+P picker for switching the Claude project directory. The
     /// unfiltered list (sourced from `~/.claude/projects/`) lives on
-    /// `Launchpad`; the live query is `self.input`.
+    /// `Slashpad`; the live query is `self.input`.
     ProjectPicker,
 }
 
@@ -134,11 +134,11 @@ pub struct SessionInfo {
 
 // ---------- multi-chat state ----------
 
-/// Identifier for a chat *within this Launchpad process*. Unrelated to
+/// Identifier for a chat *within this Slashpad process*. Unrelated to
 /// Claude's `session_id` (which is assigned by the SDK and doesn't exist
 /// until after the first turn's `result` event). We need an identity
 /// from the moment we spawn the sidecar, so new chats get a local
-/// monotonically increasing `ChatId` allocated by `Launchpad`, and the
+/// monotonically increasing `ChatId` allocated by `Slashpad`, and the
 /// Claude `session_id` is stored as a separate field on `ChatState`
 /// once the `SessionId` event arrives.
 pub type ChatId = u64;
@@ -285,7 +285,7 @@ impl ChatState {
     }
 
     /// Apply a `SidecarEvent` to this chat's state. Mirrors the body of
-    /// the old `Launchpad::process_sidecar_event` (app.rs pre-refactor)
+    /// the old `Slashpad::process_sidecar_event` (app.rs pre-refactor)
     /// but scoped to a single chat, and drives `status` transitions.
     pub fn apply_event(&mut self, event: SidecarEvent) {
         self.last_activity_ms = now_ms();

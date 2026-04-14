@@ -1,8 +1,8 @@
 //! Unified idle-list: active chats + recent past sessions.
 //!
-//! Rows are built by the caller (`Launchpad::build_idle_rows_view`) as
+//! Rows are built by the caller (`Slashpad::build_idle_rows_view`) as
 //! borrowed references into `self.chats` / `self.recent_sessions`, so
-//! the view lifetime is tied to `&Launchpad`.
+//! the view lifetime is tied to `&Slashpad`.
 
 use iced::widget::{button, container, row, scrollable, text, Column};
 use iced::{Element, Length};
@@ -31,7 +31,7 @@ pub fn view<'a>(
     // Track the filtered-past-session index separately: callers of
     // `Message::SelectSession` must pass an index into the past-rows
     // list, not the unified list, to stay in sync with
-    // `Launchpad::past_session_rows()`.
+    // `Slashpad::past_session_rows()`.
     let mut past_index: usize = 0;
     let last = rows.len().saturating_sub(1);
 

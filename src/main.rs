@@ -15,7 +15,7 @@ mod terminal;
 mod tray;
 mod ui;
 
-use app::Launchpad;
+use app::Slashpad;
 
 fn main() -> iced::Result {
     // Enter a tokio runtime for the whole process lifetime so `tokio::spawn`
@@ -28,12 +28,12 @@ fn main() -> iced::Result {
 
     // Seed bundled skills so the skills directory always has skill-creator.
     if let Err(e) = skills::seed_bundled_skills() {
-        eprintln!("[launchpad] Failed to seed bundled skills: {e}");
+        eprintln!("[slashpad] Failed to seed bundled skills: {e}");
     }
 
     // Seed the default CLAUDE.md so the user can customize the system prompt.
     if let Err(e) = sidecar::seed_default_claude_md() {
-        eprintln!("[launchpad] Failed to seed default CLAUDE.md: {e}");
+        eprintln!("[slashpad] Failed to seed default CLAUDE.md: {e}");
     }
 
     // Use an Accessory activation policy on macOS so no Dock icon appears.
@@ -41,7 +41,7 @@ fn main() -> iced::Result {
     platform::macos::set_accessory_activation_policy();
 
     // Initialize the external event bus BEFORE iced::application — both
-    // `Launchpad::new()`'s hotkey forwarder and the tray handlers push
+    // `Slashpad::new()`'s hotkey forwarder and the tray handlers push
     // events through it, and the iced subscription drains it.
     app::init_external_bus();
 
@@ -49,12 +49,12 @@ fn main() -> iced::Result {
     // docs require the NSApplication event loop to be running before the
     // NSStatusItem is created, and calling it before `run_with` leaves the
     // tray in a state where click events don't dispatch. See the dispatch
-    // hook in `Launchpad::new()` that creates the tray once iced's run loop
+    // hook in `Slashpad::new()` that creates the tray once iced's run loop
     // starts draining the main dispatch queue.
 
     // Multi-window daemon: the launcher palette and the tray-anchored
     // settings window are each their own iced window. `iced::daemon` starts
-    // with no windows; `Launchpad::new()` returns a task that opens the
+    // with no windows; `Slashpad::new()` returns a task that opens the
     // palette via `iced::window::open(...)`.
     //
     // Font bundling: iced's built-in Fira Sans has very narrow glyph
@@ -73,13 +73,13 @@ fn main() -> iced::Result {
     //     as real color emoji, not monochrome silhouettes.
     const DEJAVU_SANS: &[u8] = include_bytes!("../fonts/DejaVuSans.ttf");
     const NOTO_COLOR_EMOJI: &[u8] = include_bytes!("../fonts/NotoColorEmoji.ttf");
-    iced::daemon(Launchpad::title, Launchpad::update, Launchpad::view)
-        .subscription(Launchpad::subscription)
-        .theme(Launchpad::theme)
-        .style(Launchpad::style)
+    iced::daemon(Slashpad::title, Slashpad::update, Slashpad::view)
+        .subscription(Slashpad::subscription)
+        .theme(Slashpad::theme)
+        .style(Slashpad::style)
         .antialiasing(true)
         .font(DEJAVU_SANS)
         .font(NOTO_COLOR_EMOJI)
         .default_font(iced::Font::with_name("DejaVu Sans"))
-        .run_with(Launchpad::new)
+        .run_with(Slashpad::new)
 }

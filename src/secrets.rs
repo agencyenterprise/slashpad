@@ -4,20 +4,20 @@
 //! with the `apple-native` feature in Cargo.toml.
 //!
 //! Previously the API key lived in plaintext at
-//! `~/.launchpad/settings.json`. That file is scrubbed on load (see
+//! `~/.slashpad/settings.json`. That file is scrubbed on load (see
 //! `settings::AppSettings::load_or_default`) — users re-enter the key
 //! once, and it's persisted here instead.
 
 use std::io;
 
-const SERVICE: &str = "dev.launchpad.Launchpad";
+const SERVICE: &str = "dev.slashpad.Slashpad";
 const ACCOUNT: &str = "anthropic_api_key";
 
 fn entry() -> Option<keyring::Entry> {
     match keyring::Entry::new(SERVICE, ACCOUNT) {
         Ok(e) => Some(e),
         Err(err) => {
-            eprintln!("[launchpad] keychain entry unavailable: {err}");
+            eprintln!("[slashpad] keychain entry unavailable: {err}");
             None
         }
     }
@@ -32,7 +32,7 @@ pub fn get_api_key() -> Option<String> {
         Ok(key) => Some(key),
         Err(keyring::Error::NoEntry) => None,
         Err(err) => {
-            eprintln!("[launchpad] keychain read failed: {err}");
+            eprintln!("[slashpad] keychain read failed: {err}");
             None
         }
     }

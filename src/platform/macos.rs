@@ -73,7 +73,7 @@ pub fn activate_ignoring_other_apps() {
     app.activateIgnoringOtherApps(true);
 }
 
-/// Lazily register a custom `LaunchpadPanel` subclass of `NSPanel` that
+/// Lazily register a custom `SlashpadPanel` subclass of `NSPanel` that
 /// overrides `canBecomeKeyWindow` and `canBecomeMainWindow` to return `YES`.
 ///
 /// Why a subclass: a borderless `NSPanel` with `NSWindowStyleMaskNonactivatingPanel`
@@ -82,12 +82,12 @@ pub fn activate_ignoring_other_apps() {
 /// events from reaching the first responder chain. Overriding the two
 /// methods to unconditionally return `YES` is what `tauri-nspanel` does
 /// internally via its `tauri_panel!` macro.
-fn launchpad_panel_class() -> &'static AnyClass {
+fn slashpad_panel_class() -> &'static AnyClass {
     static CLASS: OnceLock<&'static AnyClass> = OnceLock::new();
     CLASS.get_or_init(|| {
         let superclass = AnyClass::get("NSPanel").expect("NSPanel class must exist");
-        let mut builder = ClassBuilder::new("LaunchpadPanel", superclass)
-            .expect("LaunchpadPanel class was already registered");
+        let mut builder = ClassBuilder::new("SlashpadPanel", superclass)
+            .expect("SlashpadPanel class was already registered");
 
         // Use `*mut AnyObject` (not `&AnyObject`) as the receiver: objc2 0.5
         // only implements `MessageReceiver` for `&'a T` with a *specific*
@@ -114,7 +114,7 @@ fn launchpad_panel_class() -> &'static AnyClass {
 }
 
 /// Swap the Objective-C class of an `NSWindow` pointer to our custom
-/// `LaunchpadPanel` subclass of `NSPanel`.
+/// `SlashpadPanel` subclass of `NSPanel`.
 ///
 /// iced/winit creates a plain `NSWindow`; NSPanel-only behaviors
 /// (`NSWindowStyleMaskNonactivatingPanel`, floating over full-screen apps)
@@ -124,11 +124,11 @@ fn launchpad_panel_class() -> &'static AnyClass {
 /// operation is idempotent (swapping to the same class is a no-op).
 ///
 /// Safety: `ns_window_ptr` must be a valid live Cocoa window pointer.
-unsafe fn convert_nswindow_to_launchpad_panel(ns_window_ptr: *mut c_void) {
+unsafe fn convert_nswindow_to_slashpad_panel(ns_window_ptr: *mut c_void) {
     extern "C" {
         fn object_setClass(obj: *mut AnyObject, cls: *const AnyClass) -> *const AnyClass;
     }
-    let panel_cls = launchpad_panel_class();
+    let panel_cls = slashpad_panel_class();
     let _prev = object_setClass(
         ns_window_ptr as *mut AnyObject,
         panel_cls as *const AnyClass,
@@ -136,7 +136,7 @@ unsafe fn convert_nswindow_to_launchpad_panel(ns_window_ptr: *mut c_void) {
 }
 
 /// Minimal NSPanel treatment for the settings window: swap the Objective-C
-/// class to `LaunchpadPanel` so `canBecomeKeyWindow` / `canBecomeMainWindow`
+/// class to `SlashpadPanel` so `canBecomeKeyWindow` / `canBecomeMainWindow`
 /// return `YES`, and nothing else. We explicitly avoid touching the style
 /// mask / background color / collection behavior because those paths fire
 /// AppKit redraw notifications that have crashed the settings-window open
@@ -153,7 +153,7 @@ pub unsafe fn make_window_key_capable(ns_window_ptr: *mut c_void) {
     if ns_window_ptr.is_null() {
         return;
     }
-    convert_nswindow_to_launchpad_panel(ns_window_ptr);
+    convert_nswindow_to_slashpad_panel(ns_window_ptr);
 }
 
 /// Apply the palette-style floating panel treatment to a raw `NSWindow*`
@@ -169,12 +169,12 @@ pub unsafe fn apply_palette_style(ns_window_ptr: *mut c_void) {
         return;
     }
 
-    // First, swap the underlying class from NSWindow to our LaunchpadPanel
+    // First, swap the underlying class from NSWindow to our SlashpadPanel
     // subclass of NSPanel so panel-only behaviors (NonactivatingPanel style,
     // float-over-fullscreen, canBecomeKey override) actually take effect.
     // This must happen before `setStyleMask` for NonactivatingPanel to be
     // honored.
-    convert_nswindow_to_launchpad_panel(ns_window_ptr);
+    convert_nswindow_to_slashpad_panel(ns_window_ptr);
 
     let window: &NSWindow = &*ns_window_ptr.cast::<NSWindow>();
 
@@ -338,7 +338,7 @@ pub fn primary_scale_factor() -> f64 {
 ///
 /// Iterates `NSApp.windows()` and returns the first entry whose Objective-C
 /// class name ends in `WinitWindow` (iced/winit's window class) or
-/// `LaunchpadPanel` (our custom NSPanel subclass, after the class swap).
+/// `SlashpadPanel` (our custom NSPanel subclass, after the class swap).
 ///
 /// Two subtleties:
 ///
@@ -351,7 +351,7 @@ pub fn primary_scale_factor() -> f64 {
 /// 2. **tray-icon's NSStatusBarWindow**: the `tray-icon` crate adds an
 ///    `NSStatusBarWindow` to `NSApp.windows()` as soon as the menu-bar tray is
 ///    created. That window is a private AppKit NSWindow subclass; swapping
-///    its class to `LaunchpadPanel` + calling `setBackgroundColor` crashes
+///    its class to `SlashpadPanel` + calling `setBackgroundColor` crashes
 ///    AppKit with a `viewNeedsDisplayInRectNotification:` unrecognized-selector
 ///    exception. The suffix filter naturally skips it.
 ///
@@ -381,7 +381,7 @@ pub unsafe fn first_app_window_ptr() -> *mut c_void {
         let Ok(name_str) = std::str::from_utf8(name_bytes) else {
             continue;
         };
-        if name_str.ends_with("WinitWindow") || name_str.ends_with("LaunchpadPanel") {
+        if name_str.ends_with("WinitWindow") || name_str.ends_with("SlashpadPanel") {
             let ptr: *const NSWindow = &*window;
             return ptr as *mut c_void;
         }

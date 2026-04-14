@@ -97,8 +97,8 @@ async function runTurn(userPrompt) {
     cwd: cwd || process.env.HOME,
     // Use the claude_code preset. `settingSources` controls which on-disk
     // Claude settings the SDK loads:
-    //   - ["project"] always loads ~/.launchpad/CLAUDE.md (seeded from
-    //     bundled-prompts/CLAUDE.md by Rust), which is how Launchpad's
+    //   - ["project"] always loads ~/.slashpad/CLAUDE.md (seeded from
+    //     bundled-prompts/CLAUDE.md by Rust), which is how Slashpad's
     //     system prompt is customized.
     //   - ["user", "project"] additionally loads ~/.claude/ — the user's
     //     personal CLAUDE.md, skills, and hooks — when the Settings
@@ -135,7 +135,7 @@ async function runTurn(userPrompt) {
         if (isFirstTurn && !payload.resume) {
           const dir = cwd || process.env.HOME;
           const title = userPrompt.length > 80 ? userPrompt.slice(0, 77) + "..." : userPrompt;
-          tagSession(sessionId, "launchpad", { dir }).catch(() => {});
+          tagSession(sessionId, "slashpad", { dir }).catch(() => {});
           renameSession(sessionId, title, { dir }).catch(() => {});
           isFirstTurn = false;
         }

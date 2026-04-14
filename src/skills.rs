@@ -1,6 +1,6 @@
 //! Skill loader + bundled-skill seeder.
 //!
-//! Skills live at `~/.launchpad/.claude/skills/<name>/SKILL.md`. A SKILL.md
+//! Skills live at `~/.slashpad/.claude/skills/<name>/SKILL.md`. A SKILL.md
 //! file has a YAML frontmatter block. Mirrors `src_react_legacy/lib/skills.ts`.
 
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ static SKILL_CREATOR_DIR: Dir<'_> =
 fn skills_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home)
-        .join(".launchpad")
+        .join(".slashpad")
         .join(".claude")
         .join("skills")
 }
@@ -44,10 +44,10 @@ fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
     serde_yaml::from_str::<Frontmatter>(block).ok()
 }
 
-/// Load every user-invocable skill under `~/.launchpad/.claude/skills`,
+/// Load every user-invocable skill under `~/.slashpad/.claude/skills`,
 /// and — when `load_user_settings` is true — also under `~/.claude/skills`.
-/// On name collisions the project-level (`~/.launchpad/...`) skill wins,
-/// so Launchpad's bundled skills can't be shadowed by a user skill with
+/// On name collisions the project-level (`~/.slashpad/...`) skill wins,
+/// so Slashpad's bundled skills can't be shadowed by a user skill with
 /// the same name.
 pub fn load_skills(load_user_settings: bool) -> anyhow::Result<Vec<Skill>> {
     // Project-level first so it wins on name collisions during dedup.

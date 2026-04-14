@@ -1,8 +1,8 @@
 {
-  "name": "launchpad-sidecar",
+  "name": "slashpad-sidecar",
   "version": "0.1.0",
   "private": true,
-  "description": "Node.js sidecar wrapping the Claude Agent SDK. Spawned by the Rust launchpad binary — not a standalone app.",
+  "description": "Node.js sidecar wrapping the Claude Agent SDK. Spawned by the Rust slashpad binary — not a standalone app.",
   "type": "module",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.96"
