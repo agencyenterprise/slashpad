@@ -33,9 +33,26 @@ pub enum FollowUp {
 }
 
 pub fn runner_path() -> PathBuf {
-    // Default: slashpad's own project dir under $HOME/dev/slashpad. In production
-    // installs this would come from a bundled resource; for the dev path we can
-    // resolve it relative to the current working directory.
+    // 1. Explicit override via environment variable.
+    if let Ok(path) = std::env::var("SLASHPAD_RUNNER") {
+        return PathBuf::from(path);
+    }
+
+    // 2. Relative to the binary — Homebrew installs the binary into
+    //    <prefix>/bin/slashpad and the sidecar into <prefix>/libexec/agent/,
+    //    so ../libexec/agent/runner.mjs resolves correctly.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(canonical) = exe.canonicalize() {
+            if let Some(exe_dir) = canonical.parent() {
+                let libexec_path = exe_dir.join("../libexec/agent/runner.mjs");
+                if libexec_path.exists() {
+                    return libexec_path;
+                }
+            }
+        }
+    }
+
+    // 3. CWD-relative fallback for development (cargo run from repo root).
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     cwd.join("agent").join("runner.mjs")
 }
