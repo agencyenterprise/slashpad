@@ -488,7 +488,7 @@ impl Launchpad {
             recent_sessions: Vec::new(),
             selected_idle_index: 0,
             idle_selection_active: true,
-            api_key_input: crate::secrets::get_api_key().unwrap_or_default(),
+            api_key_input: String::new(),
             settings,
             api_key_visible: false,
             recording_hotkey: false,
@@ -2247,7 +2247,9 @@ impl Launchpad {
         // visible as bullets, not whatever stale string is still in
         // the input field).
         self.api_key_visible = false;
-        self.api_key_input = crate::secrets::get_api_key().unwrap_or_default();
+        if !self.settings.use_subscription {
+            self.api_key_input = crate::secrets::get_api_key().unwrap_or_default();
+        }
 
         let settings_w = 340.0_f64;
         let x = (tray_x + tray_w / 2.0 - settings_w / 2.0) as f32;
