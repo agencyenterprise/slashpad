@@ -21,8 +21,18 @@ class Slashpad < Formula
     end
   end
 
+  service do
+    run opt_bin/"slashpad"
+    keep_alive true
+    log_path var/"log/slashpad.log"
+    error_log_path var/"log/slashpad.log"
+  end
+
   def caveats
     <<~EOS
+      To start Slashpad now and have it launch at login:
+        brew services start slashpad
+
       Authenticate with Claude by running `claude login` in your terminal,
       then press Ctrl+Space to open the Slashpad palette.
 
