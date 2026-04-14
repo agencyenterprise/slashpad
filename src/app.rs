@@ -1558,19 +1558,40 @@ impl Slashpad {
     fn handle_submit(&mut self) -> Task<Message> {
         match self.mode {
             Mode::Chatting if !self.input.trim().is_empty() => {
-                // Only dispatch a follow-up if the active chat is
-                // actually ready; otherwise silently drop — today's
-                // `command_input` placeholder already reflects this
-                // state so the user sees "Waiting for response...".
-                let ready = self
-                    .active_chat()
-                    .map(|e| matches!(e.state.status, ChatStatus::Idle))
-                    .unwrap_or(false);
-                if ready {
-                    let content = self.input.trim().to_string();
-                    self.send_follow_up(content)
-                } else {
-                    Task::none()
+                let content = self.input.trim().to_string();
+                let status = self.active_chat().map(|e| e.state.status);
+
+                match status {
+                    Some(ChatStatus::Idle) => {
+                        // Agent is ready — normal follow-up path.
+                        self.send_follow_up(content)
+                    }
+                    Some(ChatStatus::Initializing | ChatStatus::Streaming) => {
+                        // Agent is busy — interrupt then follow up.
+                        let chat_id = self.active_chat_id.unwrap();
+                        let has_session_id = self
+                            .chats
+                            .get(&chat_id)
+                            .and_then(|e| e.state.session_id.clone())
+                            .is_some();
+
+                        // Kill the running sidecar and seal partial output.
+                        if let Some(entry) = self.chats.get_mut(&chat_id) {
+                            entry.sidecar = None;
+                            entry.state.mark_cancelled();
+                        }
+
+                        if has_session_id {
+                            // Session exists — send_follow_up will respawn
+                            // with resume, continuing the conversation.
+                            self.send_follow_up(content)
+                        } else {
+                            // No session_id yet (interrupted during init) —
+                            // can't resume, so start a brand new chat.
+                            self.start_chat(content)
+                        }
+                    }
+                    _ => Task::none(),
                 }
             }
             Mode::Skills => {
@@ -1990,6 +2011,12 @@ impl Slashpad {
         let Some(entry) = self.chats.get_mut(&chat_id) else {
             return Task::none();
         };
+        // If a new sidecar has already been spawned (e.g. after an
+        // interrupt-and-follow-up), this event is from the old
+        // forwarder — ignore it so we don't stomp the live sidecar.
+        if entry.sidecar.is_some() {
+            return Task::none();
+        }
         entry.sidecar = None;
         if !matches!(entry.state.status, ChatStatus::Idle | ChatStatus::Error) {
             entry.state.status = ChatStatus::Closed;

@@ -9,7 +9,7 @@ use crate::state::Mode;
 pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Message> {
     let placeholder = match mode {
         Mode::Chatting if is_agent_ready => "Send a follow-up...",
-        Mode::Chatting => "Waiting for response...",
+        Mode::Chatting => "Wait for Claude or interrupt",
         Mode::ProjectPicker => "Search for a project...",
         _ => "Type / for skills or prompt Claude Code",
     };
