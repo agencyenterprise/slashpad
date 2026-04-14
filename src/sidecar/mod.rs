@@ -1,4 +1,4 @@
-//! Sidecar: spawns `node agent/runner.mjs` and manages JSONL IPC.
+//! Sidecar: spawns `bun agent/runner.mjs` (or `node` as fallback) and manages JSONL IPC.
 
 pub mod events;
 pub mod payload;

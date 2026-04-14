@@ -5,19 +5,38 @@ class Slashpad < Formula
   sha256 "1eb84093a4d6a7b5941827c03b32b7175fb4ff7c9a6fdb6323684c3894a8c7d4"
   license "MIT"
 
+  # To update: change BUN_VERSION, then run:
+  #   curl -sL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-darwin-aarch64.zip" | shasum -a 256
+  #   curl -sL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-darwin-x64.zip" | shasum -a 256
+  BUN_VERSION = "1.3.12"
+
   depends_on "rust" => :build
-  depends_on "node"
   depends_on :macos
+
+  resource "bun" do
+    if Hardware::CPU.arm?
+      url "https://github.com/oven-sh/bun/releases/download/bun-v#{BUN_VERSION}/bun-darwin-aarch64.zip"
+      sha256 "6c4bb87dd013ed1a8d6a16e357a3d094959fd5530b4d7061f7f3680c3c7cea1c"
+    else
+      url "https://github.com/oven-sh/bun/releases/download/bun-v#{BUN_VERSION}/bun-darwin-x64.zip"
+      sha256 "0f58c53a3e7947f1e626d2f8d285f97c14b7cadcca9c09ebafc0ae9d35b58c3d"
+    end
+  end
 
   def install
     system "cargo", "install", *std_cargo_args
+
     libexec.install "agent"
     libexec.install "package.json"
-    if File.exist?("package-lock.json")
-      libexec.install "package-lock.json"
+
+    resource("bun").stage do
+      bun_bin = Pathname.glob("bun-darwin-*/bun").first
+      (libexec/"bin").install bun_bin
+      chmod 0755, libexec/"bin/bun"
     end
+
     cd libexec do
-      system "npm", "install", "--production"
+      system libexec/"bin/bun", "install", "--production"
     end
   end
 
@@ -43,5 +62,6 @@ class Slashpad < Formula
 
   test do
     assert_predicate bin/"slashpad", :executable?
+    assert_predicate libexec/"bin/bun", :executable?
   end
 end

@@ -1,4 +1,4 @@
-//! Spawns `node agent/runner.mjs <base64_payload>` and plumbs stdin/stdout.
+//! Spawns `bun agent/runner.mjs <base64_payload>` (or node as fallback) and plumbs stdin/stdout.
 //!
 //! - stdout: newline-delimited JSON → parsed into `SidecarEvent`s → sent on a
 //!   broadcast-like mpsc::UnboundedSender<SidecarEvent>. When iced subscribes,
@@ -57,13 +57,54 @@ pub fn runner_path() -> PathBuf {
     cwd.join("agent").join("runner.mjs")
 }
 
+/// Resolve the JS runtime (bun or node) used to execute runner.mjs.
+///
+/// Priority:
+/// 1. `SLASHPAD_RUNTIME` env var — explicit override.
+/// 2. `../libexec/bin/bun` relative to this executable — Homebrew layout.
+/// 3. `bun` on PATH — developer machines with bun installed.
+/// 4. `node` on PATH — legacy fallback.
+fn runtime_path() -> PathBuf {
+    if let Ok(p) = std::env::var("SLASHPAD_RUNTIME") {
+        return PathBuf::from(p);
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(canonical) = exe.canonicalize() {
+            if let Some(exe_dir) = canonical.parent() {
+                let bundled = exe_dir.join("../libexec/bin/bun");
+                if bundled.exists() {
+                    return bundled;
+                }
+            }
+        }
+    }
+
+    if command_exists("bun") {
+        return PathBuf::from("bun");
+    }
+
+    PathBuf::from("node")
+}
+
+fn command_exists(cmd: &str) -> bool {
+    std::process::Command::new(cmd)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Spawn the sidecar for the given payload and return handles for event draining
 /// and follow-up message sending.
 pub fn spawn(payload: Payload) -> std::io::Result<SpawnedSidecar> {
     let encoded = payload.to_base64_arg();
     let runner = runner_path();
+    let runtime = runtime_path();
 
-    let mut cmd = Command::new("node");
+    let mut cmd = Command::new(&runtime);
     cmd.arg(&runner)
         .arg(&encoded)
         .stdin(Stdio::piped())

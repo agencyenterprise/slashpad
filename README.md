@@ -13,7 +13,7 @@ brew services start slashpad
 
 Then press **Ctrl+Space** to open the palette. You can change the hotkey in Settings (click the tray menu icon).
 
-> macOS only. Requires Node.js 18+ (for the Claude Agent SDK sidecar).
+> macOS only. The JS runtime (Bun) is bundled automatically.
 
 ## Updating
 
@@ -26,7 +26,7 @@ If you built from source, pull the latest and rebuild:
 
 ```bash
 git pull
-npm install
+bun install
 cargo build --release
 ```
 
@@ -113,14 +113,14 @@ Claude handles installing Composio and linking your accounts automatically. The 
                     │  stdin/stdout JSONL
                     ▼
            agent/runner.mjs
-           (Node.js sidecar)
+            (JS sidecar)
                     │
                     ▼
        @anthropic-ai/claude-agent-sdk
 ```
 
 - **Rust GUI** — iced framework on winit + wgpu. No webview, no Electron.
-- **Node.js sidecar** — wraps the Claude Agent SDK (no Rust SDK exists). Communicates via JSONL over stdin/stdout.
+- **JS sidecar** — wraps the Claude Agent SDK (no Rust SDK exists). Bun is bundled in Homebrew installs. Communicates via JSONL over stdin/stdout.
 - **macOS NSPanel** — the floating palette appears over full-screen apps, across all spaces.
 
 ## Building from source
@@ -128,13 +128,13 @@ Claude handles installing Composio and linking your accounts automatically. The 
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (stable)
-- [Node.js](https://nodejs.org/) 18+
+- [Bun](https://bun.sh/) (or Node.js 18+)
 - macOS
 
 ### Build
 
 ```bash
-npm install              # Install sidecar dependencies
+bun install              # Install sidecar dependencies
 cargo run                # Development build + run
 cargo build --release    # Optimized binary at target/release/slashpad
 ```

@@ -6,14 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Slashpad is a desktop AI command palette (think Raycast) built as a **native Rust binary** using **iced** (GUI) + a **Node.js sidecar** that wraps the Claude Agent SDK. Users press **Ctrl+Space** to summon a floating palette, type a command or natural language prompt, and Claude executes it with tool access.
+Slashpad is a desktop AI command palette (think Raycast) built as a **native Rust binary** using **iced** (GUI) + a **JS sidecar** (Bun) that wraps the Claude Agent SDK. Users press **Ctrl+Space** to summon a floating palette, type a command or natural language prompt, and Claude executes it with tool access.
 
 There is **no webview** and **no React/TypeScript**. The previous Tauri + React implementation was rewritten to be pure Rust — everything except the sidecar.
 
 ## Commands
 
 ```bash
-npm install              # Install sidecar's Node dependencies (@anthropic-ai/claude-agent-sdk)
+bun install              # Install sidecar dependencies (@anthropic-ai/claude-agent-sdk)
 cargo run                # Development build + run
 cargo build --release    # Optimized release binary at target/release/slashpad
 cargo check              # Fast type-check feedback loop
@@ -25,7 +25,7 @@ There are no automated tests.
 
 **Two runtimes:**
 - **Rust binary** (`src/`): UI (iced + winit + wgpu), state machine, window management, global hotkey, NSPanel wrapping, sidecar process management.
-- **Node.js sidecar** (`agent/runner.mjs`): Runs `@anthropic-ai/claude-agent-sdk` in a spawned child process. Communicates with the Rust side via JSONL on stdin/stdout. **Unchanged from the pre-rewrite version.**
+- **JS sidecar** (`agent/runner.mjs`): Runs `@anthropic-ai/claude-agent-sdk` in a spawned child process. Communicates with the Rust side via JSONL on stdin/stdout. Bun is bundled in Homebrew installs; falls back to `node` in dev.
 
 **Module layout** (`src/`):
 - `main.rs` — entry point. Builds a tokio runtime, enters it, seeds bundled skills, sets macOS activation policy, starts iced.
@@ -61,7 +61,7 @@ The 200ms post-launch NSPanel wrapping hook in `Slashpad::new()` uses `std::thre
 
 ## Sidecar IPC schema
 
-The sidecar is spawned as `node agent/runner.mjs <base64-payload>`. The payload is a base64-encoded JSON blob with one of three shapes:
+The sidecar is spawned as `bun agent/runner.mjs <base64-payload>` (or `node` as fallback). The payload is a base64-encoded JSON blob with one of three shapes:
 
 - **chat**: `{ mode: "chat", prompt, systemPrompt, apiKey?, cwd, resume? }` — long-lived; reads stdin for follow-up `{"type":"message","content":"..."}` or `{"type":"close"}` lines.
 - **list**: `{ mode: "list", cwd }` — one-shot; emits `{ type: "session", sessionId, summary, lastModified, firstPrompt }` per session then `complete`.
