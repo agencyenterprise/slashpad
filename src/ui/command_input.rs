@@ -11,7 +11,7 @@ pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Messag
         Mode::Chatting if is_agent_ready => "Send a follow-up...",
         Mode::Chatting => "Waiting for response...",
         Mode::ProjectPicker => "Search for a project...",
-        _ => "Run a command or ask anything...",
+        _ => "Type / for skills or prompt Claude Code",
     };
 
     let input = text_input(placeholder, value)
