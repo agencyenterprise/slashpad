@@ -30,6 +30,11 @@ pub struct KeyhintContext {
     /// the "⌘T Terminal" hint so it only shows when Cmd+T would
     /// actually resolve to a resumable session.
     pub has_session_id: bool,
+    /// True when the active chat is currently Initializing or
+    /// Streaming — i.e., a turn is in flight and Ctrl+C would cancel
+    /// it. Gates the `ctrl c  Cancel` hint so it only appears when it
+    /// would actually do something.
+    pub is_generating: bool,
     /// True in `Mode::Skills` when the input has already committed to
     /// a concrete skill (`/<name>` or `/<name> ...`). Swaps the Enter
     /// hint from "Select" (autocomplete) to "Run".
@@ -67,6 +72,15 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         Mode::ProjectPicker => {
             vec![("↵", "Switch"), ("↑↓", "Navigate"), ("esc", "Back")]
         }
+        Mode::Chatting if ctx.is_generating && ctx.has_session_id => vec![
+            ("↵", "Send"),
+            ("⌘T", "Terminal"),
+            ("esc", "Back"),
+            ("ctrl c", "Cancel"),
+        ],
+        Mode::Chatting if ctx.is_generating => {
+            vec![("↵", "Send"), ("esc", "Back"), ("ctrl c", "Cancel")]
+        }
         Mode::Chatting if ctx.has_session_id => {
             vec![("↵", "Send"), ("⌘T", "Terminal"), ("esc", "Back")]
         }
@@ -74,8 +88,10 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         Mode::Settings => vec![],
     };
 
-    // Split: `esc` hints render flush-left, everything else flush-right.
-    let (left, right): (Vec<_>, Vec<_>) = hints.into_iter().partition(|(key, _)| *key == "esc");
+    // Split: `esc` and `ctrl c` hints render flush-left (as a pair,
+    // in vec order), everything else flush-right.
+    let (left, right): (Vec<_>, Vec<_>) =
+        hints.into_iter().partition(|(key, _)| *key == "esc" || *key == "ctrl c");
 
     let mut bar: Row<'static, Message> = Row::new().spacing(12).align_y(iced::Alignment::Center);
     for (key, label) in left {

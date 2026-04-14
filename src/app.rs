@@ -200,6 +200,10 @@ pub enum Message {
     InputChanged(String),
     Submit,
     EscapePressed,
+    /// Ctrl+C while a chat turn is in flight — kills the sidecar,
+    /// preserving any partial assistant bubble and leaving the chat
+    /// ready for a follow-up (respawned via the resume path).
+    CancelGeneration,
     /// Cmd+Backspace in the launcher — clears the input. Carries the
     /// window id so the handler can ignore the keystroke when it fired
     /// inside the Settings window (which has its own text input).
@@ -604,6 +608,11 @@ impl Launchpad {
                     {
                         return Some(Message::ClearLauncherInput { window_id });
                     }
+                    if modifiers.control()
+                        && matches!(key.as_ref(), Key::Character("c"))
+                    {
+                        return Some(Message::CancelGeneration);
+                    }
                     match key.as_ref() {
                         Key::Named(Named::Escape) => Some(Message::EscapePressed),
                         _ => None,
@@ -799,6 +808,30 @@ impl Launchpad {
                     return Task::none();
                 }
                 self.hide_palette()
+            }
+
+            Message::CancelGeneration => {
+                let Some(chat_id) = self.active_chat_id else {
+                    return Task::none();
+                };
+                let Some(entry) = self.chats.get_mut(&chat_id) else {
+                    return Task::none();
+                };
+                if !matches!(
+                    entry.state.status,
+                    ChatStatus::Initializing | ChatStatus::Streaming
+                ) {
+                    return Task::none();
+                }
+                // Dropping the SpawnedSidecar triggers kill_on_drop on
+                // the Child and closes stdin, which ends the writer
+                // task. The reader task exits when stdout closes.
+                // `session_id` (if already assigned) is preserved on
+                // ChatState, so the next submit respawns via the
+                // existing resume path in `send_follow_up`.
+                entry.sidecar = None;
+                entry.state.mark_cancelled();
+                Task::none()
             }
 
             Message::NavUp => {
@@ -1403,6 +1436,13 @@ impl Launchpad {
                     .active_chat()
                     .and_then(|e| e.state.session_id.as_deref())
                     .is_some(),
+                is_generating: self
+                    .active_chat()
+                    .map(|e| matches!(
+                        e.state.status,
+                        ChatStatus::Initializing | ChatStatus::Streaming
+                    ))
+                    .unwrap_or(false),
                 skill_locked: self.locked_skill().is_some(),
                 project_path_display: display_project_path(&self.project_path),
             },

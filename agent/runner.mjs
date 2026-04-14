@@ -116,21 +116,24 @@ async function runTurn(userPrompt) {
 
   try {
     for await (const message of query({ prompt: userPrompt, options })) {
-      if ("result" in message) {
-        // Capture session ID and tag immediately so session appears in history
-        if (message.session_id) {
-          sessionId = message.session_id;
-          emit({ type: "session_id", sessionId, timestamp: Date.now() });
+      // Emit the session id as soon as the SDK exposes it (first yielded
+      // message — e.g. the `system` init — already carries it). Rust
+      // needs this early so it can resume the session if the user
+      // interrupts the turn before it completes.
+      if (message.session_id && message.session_id !== sessionId) {
+        sessionId = message.session_id;
+        emit({ type: "session_id", sessionId, timestamp: Date.now() });
 
-          if (isFirstTurn && !payload.resume) {
-            const dir = cwd || process.env.HOME;
-            const title = userPrompt.length > 80 ? userPrompt.slice(0, 77) + "..." : userPrompt;
-            tagSession(sessionId, "launchpad", { dir }).catch(() => {});
-            renameSession(sessionId, title, { dir }).catch(() => {});
-            isFirstTurn = false;
-          }
+        if (isFirstTurn && !payload.resume) {
+          const dir = cwd || process.env.HOME;
+          const title = userPrompt.length > 80 ? userPrompt.slice(0, 77) + "..." : userPrompt;
+          tagSession(sessionId, "launchpad", { dir }).catch(() => {});
+          renameSession(sessionId, title, { dir }).catch(() => {});
+          isFirstTurn = false;
         }
+      }
 
+      if ("result" in message) {
         if (message.result && !emittedText) {
           emit({ type: "text_delta", delta: message.result, timestamp: Date.now() });
         }

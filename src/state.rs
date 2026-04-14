@@ -246,6 +246,20 @@ impl ChatState {
         self.messages.iter_mut().find(|m| m.id == id)
     }
 
+    /// Mark an in-flight turn as cancelled by the user. Seals the
+    /// current streaming assistant bubble (if any) as Complete so the
+    /// partial content renders normally, and flips the chat back to
+    /// `Idle` so the next follow-up is allowed. Callers are responsible
+    /// for dropping the `SpawnedSidecar` that was producing the turn.
+    pub fn mark_cancelled(&mut self) {
+        if let Some(msg) = self.current_assistant_mut() {
+            msg.status = MessageStatus::Complete;
+        }
+        self.current_assistant_id = None;
+        self.status = ChatStatus::Idle;
+        self.last_activity_ms = now_ms();
+    }
+
     pub fn push_error(&mut self, error: String) {
         let id = self.alloc_msg_id();
         self.current_assistant_id = Some(id);
