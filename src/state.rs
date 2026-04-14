@@ -14,6 +14,10 @@ pub enum Mode {
     Skills,
     Chatting,
     Settings,
+    /// Cmd+P picker for switching the Claude project directory. The
+    /// unfiltered list (sourced from `~/.claude/projects/`) lives on
+    /// `Launchpad`; the live query is `self.input`.
+    ProjectPicker,
 }
 
 #[derive(Debug, Clone)]

@@ -59,6 +59,9 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         ],
         Mode::Idle => vec![("↵", "Send"), ("/", "Skills"), ("esc", "Dismiss")],
         Mode::Skills => vec![("↵", "Run"), ("↑↓", "Navigate"), ("esc", "Dismiss")],
+        Mode::ProjectPicker => {
+            vec![("↵", "Switch"), ("↑↓", "Navigate"), ("esc", "Back")]
+        }
         Mode::Chatting if ctx.has_session_id => {
             vec![("↵", "Send"), ("⌘T", "Terminal"), ("esc", "Back")]
         }
@@ -75,7 +78,17 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
     }
     bar = bar.push(horizontal_space().width(Length::Fill));
     if !ctx.project_path_display.is_empty() && !matches!(mode, Mode::Settings) {
-        bar = bar.push(text(ctx.project_path_display).size(11).color(theme::MUTED));
+        // Prefix the path with a ⌘P affordance so the user knows how
+        // to change it. Suppressed inside the picker itself — the
+        // user is already there, so the hint would just be noise.
+        let mut center: Row<'static, Message> =
+            Row::new().spacing(6).align_y(iced::Alignment::Center);
+        if !matches!(mode, Mode::ProjectPicker) {
+            center = center.push(kbd_chip("⌘P"));
+        }
+        center =
+            center.push(text(ctx.project_path_display).size(11).color(theme::MUTED));
+        bar = bar.push(center);
     }
     bar = bar.push(horizontal_space().width(Length::Fill));
     for (key, label) in right {
@@ -99,7 +112,17 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
 }
 
 fn hint_item(key: &'static str, label: &'static str) -> Element<'static, Message> {
-    let kbd = container(text(key).size(11).color(theme::TEXT))
+    row![kbd_chip(key), text(label).size(11).color(theme::MUTED)]
+        .spacing(6)
+        .align_y(iced::Alignment::Center)
+        .into()
+}
+
+/// The boxed-key visual used in every key hint. Factored out so the
+/// ⌘P chip beside the centered project path can reuse the same
+/// styling without pulling a label along with it.
+fn kbd_chip(key: &'static str) -> Element<'static, Message> {
+    container(text(key).size(11).color(theme::TEXT))
         .padding([2, 6])
         .style(|_theme: &iced::Theme| iced::widget::container::Style {
             background: Some(iced::Background::Color(theme::SURFACE_2)),
@@ -110,10 +133,6 @@ fn hint_item(key: &'static str, label: &'static str) -> Element<'static, Message
             },
             text_color: Some(theme::TEXT),
             ..Default::default()
-        });
-
-    row![kbd, text(label).size(11).color(theme::MUTED)]
-        .spacing(6)
-        .align_y(iced::Alignment::Center)
+        })
         .into()
 }

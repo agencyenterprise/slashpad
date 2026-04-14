@@ -24,6 +24,8 @@ static SKILL_LIST_SCROLL_ID: LazyLock<scrollable::Id> =
     LazyLock::new(scrollable::Id::unique);
 static IDLE_LIST_SCROLL_ID: LazyLock<scrollable::Id> =
     LazyLock::new(scrollable::Id::unique);
+static PROJECT_PICKER_SCROLL_ID: LazyLock<scrollable::Id> =
+    LazyLock::new(scrollable::Id::unique);
 /// Stable scrollable id for the chat panel. Only one chat is visible at a
 /// time, so a single shared id is fine — it's how we target
 /// `scrollable::snap_to` / `scrollable::scroll_to` for autoscroll and
@@ -71,6 +73,7 @@ const CHAT_SCROLL_STEP: f32 = 60.0;
 use tokio::sync::mpsc;
 
 use crate::hotkey;
+use crate::projects::ProjectInfo;
 use crate::settings::{AppSettings, PreferredTerminal};
 use crate::sidecar::{self, FollowUp, Payload, SidecarEvent, SpawnedSidecar};
 use crate::skills;
@@ -147,6 +150,9 @@ pub enum External {
     },
     /// Background-loaded list of recent sessions.
     RecentSessions(Vec<SessionInfo>),
+    /// Background-loaded list of directories Claude Code has been run
+    /// in. Populates the Cmd+P picker.
+    ProjectsLoaded(Vec<ProjectInfo>),
     /// Background-loaded history messages for a resumed session.
     /// Tagged with the `chat_id` of the entry the history belongs to —
     /// multiple resumes can be in flight concurrently.
@@ -225,6 +231,15 @@ pub enum Message {
     /// `Closed` (unless it was already `Idle`).
     SidecarClosed(ChatId),
     RecentSessionsLoaded(Vec<SessionInfo>),
+    /// Project-picker list has finished loading from
+    /// `~/.claude/projects/`.
+    ProjectsLoaded(Vec<ProjectInfo>),
+    /// Cmd+P pressed — switch to the project-picker mode and show the
+    /// cached list. No-op in `Mode::Settings`.
+    OpenProjectPicker,
+    /// User clicked a row in the project picker. Carries the index
+    /// into the current `filtered_projects` list.
+    SelectProject(usize),
     HistoryLoaded {
         chat_id: ChatId,
         messages: Vec<ChatMessageView>,
@@ -364,10 +379,31 @@ pub struct Launchpad {
     pub settings_opened_at: Option<std::time::Instant>,
 
     /// Directory Claude Code runs in (`cwd` passed to the sidecar).
-    /// Cached at startup from `sidecar::launchpad_home()` so the UI can
-    /// render it without hitting the filesystem. Becomes user-settable
-    /// in a follow-up change.
+    /// Loaded from `settings.selected_project_path` at startup (falling
+    /// back to `~/.launchpad` if unset or missing), and updated by the
+    /// Cmd+P project picker. New chats spawn with this as their cwd;
+    /// in-flight chats keep whatever cwd they were spawned with.
     pub project_path: std::path::PathBuf,
+
+    /// All directories Claude Code has been run in, loaded once at
+    /// startup from `~/.claude/projects/` and sorted most-recent first.
+    /// Source of truth for the Cmd+P picker.
+    pub all_projects: Vec<ProjectInfo>,
+    /// Current fuzzy-filtered view of `all_projects`. Rebuilt on every
+    /// `InputChanged` while in `Mode::ProjectPicker`.
+    pub filtered_projects: Vec<ProjectInfo>,
+    /// Highlighted row in the picker. Clamped into `filtered_projects`
+    /// by the nav / InputChanged handlers.
+    pub selected_project_index: usize,
+    /// Input saved when the user opens the picker — restored on Esc so
+    /// backing out of Cmd+P doesn't destroy whatever they were typing.
+    pub input_before_picker: Option<String>,
+    /// One-shot flag: drop the next `InputChanged` after opening the
+    /// picker. `listen_with` observes Cmd+P but doesn't consume the
+    /// event, so iced's text_input also processes it and leaks a 'p'
+    /// into the input. Set true when entering the picker; cleared by
+    /// the `InputChanged` handler after it swallows the leaked char.
+    pub discard_next_input_change: bool,
 }
 
 impl Launchpad {
@@ -377,6 +413,18 @@ impl Launchpad {
 
         let settings = AppSettings::load_or_default();
         let all_skills = skills::load_skills(settings.load_user_settings).unwrap_or_default();
+
+        // Resolve the starting project path from persisted settings,
+        // falling back to `~/.launchpad` if unset or if the saved path
+        // has been deleted since last run.
+        let project_path: std::path::PathBuf = settings
+            .selected_project_path
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| {
+                sidecar::launchpad_home().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
 
         // Spin up the hotkey manager — forwards presses into the external bus.
         match hotkey::spawn(&settings.hotkey) {
@@ -391,11 +439,23 @@ impl Launchpad {
             Err(e) => eprintln!("[launchpad] failed to register hotkey: {e}"),
         }
 
-        // Kick off a background load of recent sessions for the idle view.
+        // Kick off a background load of recent sessions for the idle
+        // view — scoped to the currently-selected project.
+        let tx = external_sender();
+        let sessions_cwd = project_path.clone();
+        tokio::spawn(async move {
+            let sessions = crate::sessions::list_recent(&sessions_cwd)
+                .await
+                .unwrap_or_default();
+            let _ = tx.send(External::RecentSessions(sessions));
+        });
+
+        // Kick off a background scan of `~/.claude/projects/` so the
+        // Cmd+P picker has its list ready by the time the user opens it.
         let tx = external_sender();
         tokio::spawn(async move {
-            let sessions = crate::sessions::list_recent().await.unwrap_or_default();
-            let _ = tx.send(External::RecentSessions(sessions));
+            let projects = crate::projects::list_known().await.unwrap_or_default();
+            let _ = tx.send(External::ProjectsLoaded(projects));
         });
 
         // `iced::daemon` starts with no windows. Open the palette here; the
@@ -426,8 +486,12 @@ impl Launchpad {
             palette_window_id: Some(palette_id),
             settings_window_id: None,
             settings_opened_at: None,
-            project_path: sidecar::launchpad_home()
-                .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            project_path,
+            all_projects: Vec::new(),
+            filtered_projects: Vec::new(),
+            selected_project_index: 0,
+            input_before_picker: None,
+            discard_next_input_change: false,
         };
 
         // Tray icon creation must happen on the main thread AFTER the
@@ -531,6 +595,11 @@ impl Launchpad {
                         return Some(Message::OpenSessionInTerminal);
                     }
                     if modifiers.command()
+                        && matches!(key.as_ref(), Key::Character("p"))
+                    {
+                        return Some(Message::OpenProjectPicker);
+                    }
+                    if modifiers.command()
                         && matches!(key.as_ref(), Key::Named(Named::Backspace))
                     {
                         return Some(Message::ClearLauncherInput { window_id });
@@ -596,11 +665,37 @@ impl Launchpad {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::InputChanged(value) => {
+                // Swallow the stray 'p' from Cmd+P: the global
+                // listen_with observes the keypress but doesn't
+                // consume it, so iced's text_input also inserts it.
+                // Drop exactly one InputChanged — anything the user
+                // types after this behaves normally.
+                if self.discard_next_input_change {
+                    self.discard_next_input_change = false;
+                    self.input.clear();
+                    return Task::none();
+                }
                 self.input = value.clone();
 
                 // Skill filtering
                 if self.mode == Mode::Chatting {
                     return Task::none();
+                }
+                // Project picker owns the input while it's open: every
+                // keystroke rebuilds the fuzzy-filtered list. Exits via
+                // Esc or Submit; we never fall through to the Skills /
+                // Idle logic below while the picker is up.
+                if self.mode == Mode::ProjectPicker {
+                    self.filtered_projects = if self.input.is_empty() {
+                        self.all_projects.clone()
+                    } else {
+                        crate::fuzzy::filter_projects(&self.all_projects, &self.input)
+                    };
+                    let max = self.filtered_projects.len().saturating_sub(1);
+                    if self.selected_project_index > max {
+                        self.selected_project_index = 0;
+                    }
+                    return self.resize_task();
                 }
                 if let Some(query) = value.strip_prefix('/') {
                     self.filtered_skills = if query.is_empty() {
@@ -679,6 +774,18 @@ impl Launchpad {
                 if let Some(settings_id) = self.settings_window_id {
                     return iced::window::close(settings_id);
                 }
+                // ProjectPicker → back to Idle, restoring whatever the
+                // user had typed before Cmd+P. Does NOT dismiss the
+                // palette, matching the Skills/Chatting back pattern.
+                if self.mode == Mode::ProjectPicker {
+                    self.mode = Mode::Idle;
+                    self.input = self.input_before_picker.take().unwrap_or_default();
+                    self.filtered_projects.clear();
+                    self.selected_project_index = 0;
+                    self.selected_idle_index = 0;
+                    self.idle_selection_active = self.input.is_empty();
+                    return self.resize_task();
+                }
                 // In Chatting mode, Esc steps back to the idle thread
                 // list instead of dismissing. The sidecar keeps streaming
                 // in the background and the entry stays in `self.chats`,
@@ -704,6 +811,16 @@ impl Launchpad {
                             SKILL_LIST_SCROLL_ID.clone(),
                             self.selected_skill_index,
                             self.filtered_skills.len(),
+                        )
+                    }
+                    Mode::ProjectPicker => {
+                        if self.selected_project_index > 0 {
+                            self.selected_project_index -= 1;
+                        }
+                        snap_to_selection(
+                            PROJECT_PICKER_SCROLL_ID.clone(),
+                            self.selected_project_index,
+                            self.filtered_projects.len(),
                         )
                     }
                     Mode::Idle if !self.input.starts_with('/') && self.idle_row_count() > 0 => {
@@ -741,6 +858,17 @@ impl Launchpad {
                             SKILL_LIST_SCROLL_ID.clone(),
                             self.selected_skill_index,
                             self.filtered_skills.len(),
+                        )
+                    }
+                    Mode::ProjectPicker => {
+                        let max = self.filtered_projects.len().saturating_sub(1);
+                        if self.selected_project_index < max {
+                            self.selected_project_index += 1;
+                        }
+                        snap_to_selection(
+                            PROJECT_PICKER_SCROLL_ID.clone(),
+                            self.selected_project_index,
+                            self.filtered_projects.len(),
                         )
                     }
                     Mode::Idle if !self.input.starts_with('/') && self.idle_row_count() > 0 => {
@@ -817,6 +945,44 @@ impl Launchpad {
                 // Height may change if we're idle with empty input — the
                 // session list just became populated.
                 self.resize_task()
+            }
+
+            Message::ProjectsLoaded(projects) => {
+                self.all_projects = projects;
+                // If the picker happens to be open when results arrive
+                // (e.g. the user opened it immediately after launch,
+                // before the scan finished), replay the current input
+                // through the new list so they see filtered results.
+                if self.mode == Mode::ProjectPicker {
+                    self.filtered_projects = if self.input.is_empty() {
+                        self.all_projects.clone()
+                    } else {
+                        crate::fuzzy::filter_projects(&self.all_projects, &self.input)
+                    };
+                    self.selected_project_index = 0;
+                    return self.resize_task();
+                }
+                Task::none()
+            }
+
+            Message::OpenProjectPicker => {
+                // Settings window open → skip; ProjectPicker already
+                // open → no-op (don't reset selection/input on a
+                // double-press).
+                if self.settings_window_id.is_some() || self.mode == Mode::ProjectPicker {
+                    return Task::none();
+                }
+                self.input_before_picker = Some(std::mem::take(&mut self.input));
+                self.filtered_projects = self.all_projects.clone();
+                self.selected_project_index = 0;
+                self.mode = Mode::ProjectPicker;
+                self.discard_next_input_change = true;
+                Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())])
+            }
+
+            Message::SelectProject(i) => {
+                self.selected_project_index = i;
+                self.handle_submit()
             }
 
             Message::HistoryLoaded { chat_id, messages } => {
@@ -1167,6 +1333,14 @@ impl Launchpad {
                     SKILL_LIST_SCROLL_ID.clone(),
                 ));
             }
+            Mode::ProjectPicker => {
+                stack = stack.push(ui::theme::divider());
+                stack = stack.push(ui::project_picker::view(
+                    &self.filtered_projects,
+                    self.selected_project_index,
+                    PROJECT_PICKER_SCROLL_ID.clone(),
+                ));
+            }
             Mode::Idle if !self.input.starts_with('/') && self.idle_row_count() > 0 => {
                 // Build view-layer rows that borrow from `self`. Both
                 // active chats and past sessions are passed through the
@@ -1279,6 +1453,48 @@ impl Launchpad {
                     Task::none()
                 }
             }
+            Mode::ProjectPicker if !self.filtered_projects.is_empty() => {
+                let Some(picked) = self
+                    .filtered_projects
+                    .get(self.selected_project_index)
+                    .cloned()
+                else {
+                    return Task::none();
+                };
+                // Commit the new project: update the in-memory cwd,
+                // persist it to settings.json so it survives restarts,
+                // restore whatever the user had typed before Cmd+P,
+                // and drop back to the Idle list.
+                self.project_path = picked.path.clone();
+                self.settings.selected_project_path =
+                    Some(picked.path.to_string_lossy().into_owned());
+                if let Err(e) = self.settings.save() {
+                    eprintln!("[launchpad] failed to persist selected project: {e}");
+                }
+                self.mode = Mode::Idle;
+                // Always land on a clean Idle view for the new
+                // project: no residual query (it was scoped to the
+                // old project), no pre-selected row (so a reflex
+                // Enter doesn't resume the top session by accident),
+                // and no lingering `active_chat_id` pointing at a
+                // chat that belongs to the previous cwd.
+                self.input.clear();
+                self.input_before_picker = None;
+                self.active_chat_id = None;
+                self.filtered_projects.clear();
+                self.selected_project_index = 0;
+                self.selected_idle_index = 0;
+                self.idle_selection_active = false;
+                // Past-sessions list is scoped per-cwd, so a project
+                // switch needs a re-fetch. `refresh_sessions` handles
+                // the height-change via its own RecentSessionsLoaded
+                // handler when the new list arrives.
+                self.recent_sessions.clear();
+                Task::batch([self.refresh_sessions(), self.resize_task()])
+            }
+            // In picker mode with no matches, Enter is a silent no-op
+            // — don't fall through to "start chat with typed text".
+            Mode::ProjectPicker => Task::none(),
             Mode::Idle if self.idle_selection_active && self.idle_row_count() > 0 => {
                 // Dispatch based on which row is selected in the
                 // unified (active chats + past sessions) list. The
@@ -1410,11 +1626,15 @@ impl Launchpad {
         self.mode = Mode::Chatting;
         self.input.clear();
 
-        // Load session history in the background via a one-shot "messages" sidecar.
+        // Load session history in the background via a one-shot
+        // "messages" sidecar. Scoped to the current project's cwd so
+        // the runner finds the session's JSONL under
+        // `~/.claude/projects/<mangled-cwd>/`.
         let session_id = info.session_id.clone();
+        let cwd = self.project_path.clone();
         let tx = external_sender();
         tokio::spawn(async move {
-            let msgs = crate::sessions::load_messages(&session_id)
+            let msgs = crate::sessions::load_messages(&cwd, &session_id)
                 .await
                 .unwrap_or_default();
             let _ = tx.send(External::HistoryLoaded {
@@ -1699,8 +1919,9 @@ impl Launchpad {
 
     fn refresh_sessions(&self) -> Task<Message> {
         let tx = external_sender();
+        let cwd = self.project_path.clone();
         tokio::spawn(async move {
-            let sessions = crate::sessions::list_recent().await.unwrap_or_default();
+            let sessions = crate::sessions::list_recent(&cwd).await.unwrap_or_default();
             let _ = tx.send(External::RecentSessions(sessions));
         });
         Task::none()
@@ -1733,6 +1954,15 @@ impl Launchpad {
             Mode::Skills => {
                 let n = self.filtered_skills.len().max(1) as f32;
                 BASE + (n * ROW).min(MAX_LIST) + keyhints
+            }
+            Mode::ProjectPicker => {
+                // Rows are single-line (no description), so they land
+                // shorter than skill rows. Still cap via `MAX_LIST` so
+                // huge ~/.claude/projects/ lists scroll rather than
+                // overflow the screen.
+                const PROJECT_ROW: f32 = 36.0;
+                let n = self.filtered_projects.len().max(1) as f32;
+                BASE + (n * PROJECT_ROW).min(MAX_LIST) + keyhints
             }
             Mode::Idle => {
                 if !self.input.starts_with('/') && self.idle_row_count() > 0 {
@@ -1895,6 +2125,7 @@ fn external_subscription_stream() -> impl Stream<Item = Message> {
                 }
                 External::SidecarClosed { chat_id } => Message::SidecarClosed(chat_id),
                 External::RecentSessions(s) => Message::RecentSessionsLoaded(s),
+                External::ProjectsLoaded(p) => Message::ProjectsLoaded(p),
                 External::HistoryLoaded { chat_id, messages } => {
                     Message::HistoryLoaded { chat_id, messages }
                 }

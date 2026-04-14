@@ -3,6 +3,7 @@
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher};
 
+use crate::projects::ProjectInfo;
 use crate::state::{SessionInfo, Skill};
 
 /// Filter and rank skills by fuzzy match against the query. Matches name and
@@ -74,6 +75,34 @@ pub fn filter_sessions(sessions: &[SessionInfo], query: &str) -> Vec<SessionInfo
     }
     scored.sort_by(|a, b| b.0.cmp(&a.0));
     scored.into_iter().map(|(_, s)| s).collect()
+}
+
+/// Filter and rank known projects by fuzzy match against the query.
+/// Scores against the tilde-abbreviated display string — that's the
+/// form the user sees in the picker list, so it's also the form
+/// they'll type fragments of.
+pub fn filter_projects(projects: &[ProjectInfo], query: &str) -> Vec<ProjectInfo> {
+    if query.is_empty() {
+        return projects.to_vec();
+    }
+
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+
+    let mut scored: Vec<(u32, ProjectInfo)> = Vec::new();
+    let mut buf = Vec::new();
+    for project in projects {
+        buf.clear();
+        let score = pattern.score(
+            nucleo_matcher::Utf32Str::new(&project.display, &mut buf),
+            &mut matcher,
+        );
+        if let Some(s) = score {
+            scored.push((s, project.clone()));
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.into_iter().map(|(_, p)| p).collect()
 }
 
 /// Fuzzy-match a single haystack against a query. Returns `None` when the

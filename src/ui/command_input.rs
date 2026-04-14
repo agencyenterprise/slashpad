@@ -10,6 +10,7 @@ pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Messag
     let placeholder = match mode {
         Mode::Chatting if is_agent_ready => "Send a follow-up...",
         Mode::Chatting => "Waiting for response...",
+        Mode::ProjectPicker => "Search for a project...",
         _ => "Run a command or ask anything...",
     };
 

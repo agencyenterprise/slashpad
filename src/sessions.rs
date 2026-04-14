@@ -1,13 +1,18 @@
 //! Session history — wraps one-shot sidecar runs in `list` and `messages`
 //! modes to fetch recent sessions and past-session messages.
 
+use std::path::Path;
+
 use crate::sidecar::{self, FollowUp, Payload, SidecarEvent};
 use crate::state::{ChatMessageView, ContentBlock, MessageStatus, Role, SessionInfo};
 
-/// Spawn `runner.mjs list` and collect recent sessions.
-pub async fn list_recent() -> anyhow::Result<Vec<SessionInfo>> {
-    let home = sidecar::launchpad_home()?;
-    let payload = Payload::list(home.to_string_lossy().to_string());
+/// Spawn `runner.mjs list` against `cwd` and collect recent sessions.
+/// Sessions are scoped per-`cwd` because that's what the Claude Code
+/// CLI uses to key its `~/.claude/projects/` subdirectories; passing
+/// the current project path means the idle list reflects whatever
+/// project the user has selected via Cmd+P.
+pub async fn list_recent(cwd: &Path) -> anyhow::Result<Vec<SessionInfo>> {
+    let payload = Payload::list(cwd.to_string_lossy().to_string());
     let mut spawned = sidecar::spawn(payload)?;
 
     let mut out = Vec::new();
@@ -32,10 +37,13 @@ pub async fn list_recent() -> anyhow::Result<Vec<SessionInfo>> {
     Ok(out)
 }
 
-/// Spawn `runner.mjs messages <sessionId>` and collect historical chat messages.
-pub async fn load_messages(session_id: &str) -> anyhow::Result<Vec<ChatMessageView>> {
-    let home = sidecar::launchpad_home()?;
-    let payload = Payload::messages(session_id.to_string(), home.to_string_lossy().to_string());
+/// Spawn `runner.mjs messages <sessionId>` against `cwd` and collect
+/// historical chat messages. `cwd` must be the same project the
+/// session was recorded in — sessions live under
+/// `~/.claude/projects/<mangled-cwd>/` so the runner needs it to
+/// locate the JSONL.
+pub async fn load_messages(cwd: &Path, session_id: &str) -> anyhow::Result<Vec<ChatMessageView>> {
+    let payload = Payload::messages(session_id.to_string(), cwd.to_string_lossy().to_string());
     let mut spawned = sidecar::spawn(payload)?;
 
     let mut out = Vec::new();

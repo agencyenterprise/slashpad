@@ -4,6 +4,7 @@ mod app;
 mod fuzzy;
 mod hotkey;
 mod platform;
+mod projects;
 mod secrets;
 mod sessions;
 mod settings;

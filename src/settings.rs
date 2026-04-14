@@ -141,6 +141,13 @@ pub struct AppSettings {
     /// install stays isolated to Launchpad's own `~/.launchpad/` scope.
     #[serde(default, rename = "loadUserSettings")]
     pub load_user_settings: bool,
+    /// Directory Claude Code runs in (`cwd` passed to the sidecar).
+    /// Chosen via the Cmd+P project picker; persists across restarts
+    /// so the user stays in their last-selected project. `None` means
+    /// fall back to `~/.launchpad` (the default). A saved path that
+    /// no longer exists on disk is ignored at load time.
+    #[serde(default, rename = "selectedProjectPath")]
+    pub selected_project_path: Option<String>,
 }
 
 fn default_hotkey() -> String {
@@ -158,6 +165,7 @@ impl Default for AppSettings {
             use_subscription: true,
             preferred_terminal: PreferredTerminal::default(),
             load_user_settings: false,
+            selected_project_path: None,
         }
     }
 }

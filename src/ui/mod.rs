@@ -2,6 +2,7 @@ pub mod chat_panel;
 pub mod command_input;
 pub mod idle_list;
 pub mod keyhints;
+pub mod project_picker;
 pub mod settings;
 pub mod skill_list;
 pub mod theme;
