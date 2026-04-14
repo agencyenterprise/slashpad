@@ -151,22 +151,26 @@ fn assistant_bubble<'a>(
         }
     } else if has_tools && !msg.tools_expanded {
         // Complete, collapsed: single summary row replacing all tool blocks.
+        // Hide intermediate text that was interspersed between tool calls —
+        // only show text that comes after the last tool block.
         let duration = msg
             .result_duration_ms
             .map(std::time::Duration::from_millis);
         let summary = super::tool_line::compute_summary(msg, duration);
-        let mut summary_emitted = false;
 
-        for block in &msg.blocks {
-            if is_tool_block(block) {
-                if !summary_emitted {
-                    col = col.push(super::tool_line::summary_row(
-                        msg.id, &summary, false,
-                    ));
-                    summary_emitted = true;
+        let last_tool_idx = msg
+            .blocks
+            .iter()
+            .rposition(is_tool_block)
+            .unwrap_or(0);
+
+        col = col.push(super::tool_line::summary_row(msg.id, &summary, false));
+
+        for (i, block) in msg.blocks.iter().enumerate() {
+            if i > last_tool_idx {
+                if let ContentBlock::Text { parsed, .. } = block {
+                    col = col.push(render_markdown(parsed));
                 }
-            } else if let ContentBlock::Text { parsed, .. } = block {
-                col = col.push(render_markdown(parsed));
             }
         }
     } else if has_tools && msg.tools_expanded {
