@@ -17,7 +17,6 @@ pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Messag
     let input = text_input(placeholder, value)
         .id(INPUT_ID.clone())
         .on_input(Message::InputChanged)
-        .on_submit(Message::Submit)
         .size(15)
         .padding(12)
         .width(Length::Fill)

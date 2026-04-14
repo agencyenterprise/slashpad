@@ -199,6 +199,9 @@ pub fn external_sender() -> mpsc::UnboundedSender<External> {
 pub enum Message {
     InputChanged(String),
     Submit,
+    /// Cmd+Enter while a skill is locked — spawn the chat but dismiss
+    /// the palette immediately instead of switching to the Chatting view.
+    FireAndForgetSubmit,
     EscapePressed,
     /// Ctrl+C while a chat turn is in flight — kills the sidecar,
     /// preserving any partial assistant bubble and leaving the chat
@@ -570,16 +573,11 @@ impl Launchpad {
             Subscription::run(external_subscription_stream),
             // ArrowUp/Down propagate normally through text_input (it returns
             // Status::Ignored for them), so on_key_press is fine here.
-            //
-            // Enter is captured by text_input when it's focused (it fires
-            // on_submit there), so this global handler only runs when
-            // focus has escaped the input — e.g., after mouse-wheel
-            // scrolling over the idle list. Without this, Enter would
-            // silently do nothing in that state.
+            // Enter is handled in listen_with below so Cmd+Enter can
+            // dispatch FireAndForgetSubmit without racing on_submit.
             iced::keyboard::on_key_press(|key, _modifiers| match key.as_ref() {
                 Key::Named(Named::ArrowUp) => Some(Message::NavUp),
                 Key::Named(Named::ArrowDown) => Some(Message::NavDown),
-                Key::Named(Named::Enter) => Some(Message::Submit),
                 _ => None,
             }),
             // Escape and Cmd+T both need listen_with (not on_key_press)
@@ -593,6 +591,13 @@ impl Launchpad {
                     modifiers,
                     ..
                 }) => {
+                    if matches!(key.as_ref(), Key::Named(Named::Enter)) {
+                        return if modifiers.command() {
+                            Some(Message::FireAndForgetSubmit)
+                        } else {
+                            Some(Message::Submit)
+                        };
+                    }
                     if modifiers.command()
                         && matches!(key.as_ref(), Key::Character("t"))
                     {
@@ -766,6 +771,21 @@ impl Launchpad {
             }
 
             Message::Submit => self.handle_submit(),
+
+            Message::FireAndForgetSubmit => {
+                let prompt = self.input.trim().to_string();
+                match self.mode {
+                    Mode::Skills if self.locked_skill().is_some() => {
+                        self.start_chat_detached(prompt)
+                    }
+                    Mode::Idle
+                        if !prompt.is_empty() && !prompt.starts_with('/') =>
+                    {
+                        self.start_chat_detached(prompt)
+                    }
+                    _ => Task::none(),
+                }
+            }
 
             Message::EscapePressed => {
                 // If a hotkey recording is in progress, Esc cancels the
@@ -1659,6 +1679,41 @@ impl Launchpad {
             text_input::focus(INPUT_ID.clone()),
             snap_chat_to_bottom(),
         ])
+    }
+
+    /// Spawn a sidecar chat without switching to the Chatting view.
+    /// Used by the Cmd+Enter "fire & forget" flow: the chat streams in
+    /// the background and the palette is dismissed immediately.
+    fn start_chat_detached(&mut self, prompt: String) -> Task<Message> {
+        let chat_id = self.alloc_chat_id();
+        match self.spawn_sidecar_chat(chat_id, prompt.clone(), None) {
+            Ok(spawned) => {
+                let state = ChatState::new(chat_id, &prompt);
+                self.chats.insert(
+                    chat_id,
+                    ChatEntry {
+                        state,
+                        sidecar: Some(spawned),
+                        scroll: ChatScrollState::new(),
+                    },
+                );
+            }
+            Err(e) => {
+                let mut state = ChatState::new(chat_id, &prompt);
+                state.push_error(format!("Failed to start agent: {e}"));
+                state.status = ChatStatus::Error;
+                self.chats.insert(
+                    chat_id,
+                    ChatEntry {
+                        state,
+                        sidecar: None,
+                        scroll: ChatScrollState::new(),
+                    },
+                );
+            }
+        }
+        self.input.clear();
+        self.hide_palette()
     }
 
     fn resume_session(&mut self, info: SessionInfo) -> Task<Message> {

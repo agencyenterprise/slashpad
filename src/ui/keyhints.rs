@@ -62,12 +62,22 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         ],
         Mode::Idle if ctx.has_rows => vec![
             ("↵", "Send"),
+            ("⌘↵", "Fire & forget"),
             ("↑↓", "Navigate"),
             ("/", "Skills"),
             ("esc", "Dismiss"),
         ],
-        Mode::Idle => vec![("↵", "Send"), ("/", "Skills"), ("esc", "Dismiss")],
-        Mode::Skills if ctx.skill_locked => vec![("↵", "Run"), ("esc", "Dismiss")],
+        Mode::Idle => vec![
+            ("↵", "Send"),
+            ("⌘↵", "Fire & forget"),
+            ("/", "Skills"),
+            ("esc", "Dismiss"),
+        ],
+        Mode::Skills if ctx.skill_locked => vec![
+            ("↵", "Run"),
+            ("⌘↵", "Fire & forget"),
+            ("esc", "Dismiss"),
+        ],
         Mode::Skills => vec![("↵", "Select"), ("↑↓", "Navigate"), ("esc", "Dismiss")],
         Mode::ProjectPicker => {
             vec![("↵", "Switch"), ("↑↓", "Navigate"), ("esc", "Back")]
