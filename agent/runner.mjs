@@ -39,6 +39,7 @@ if (mode === "messages") {
       dir: payload.cwd || process.env.HOME,
       includeSystemMessages: false,
     });
+    let lastUserTimestamp = null;
     for (const msg of messages) {
       if (msg.type === "user") {
         // Extract text content from user message
@@ -59,6 +60,7 @@ if (mode === "messages") {
         }
         if (content) {
           emit({ type: "chat_message", role: "user", content, timestamp: Date.now() });
+          lastUserTimestamp = msg.timestamp ? new Date(msg.timestamp).getTime() : null;
         }
       } else if (msg.type === "assistant") {
         const message = msg.message;
@@ -73,7 +75,9 @@ if (mode === "messages") {
           }
         }
         if (content || toolEvents.length > 0) {
-          emit({ type: "chat_message", role: "assistant", content, toolEvents, timestamp: Date.now() });
+          const assistantTs = msg.timestamp ? new Date(msg.timestamp).getTime() : null;
+          const durationMs = (lastUserTimestamp && assistantTs) ? (assistantTs - lastUserTimestamp) : null;
+          emit({ type: "chat_message", role: "assistant", content, toolEvents, durationMs, timestamp: Date.now() });
         }
       }
     }

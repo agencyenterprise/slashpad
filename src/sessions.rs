@@ -54,6 +54,7 @@ pub async fn load_messages(cwd: &Path, session_id: &str) -> anyhow::Result<Vec<C
                 role,
                 content,
                 tool_events,
+                duration_ms,
                 ..
             } => {
                 let role = if role == "user" {
@@ -117,6 +118,12 @@ pub async fn load_messages(cwd: &Path, session_id: &str) -> anyhow::Result<Vec<C
                 if merged {
                     if let Some(prev) = out.last_mut() {
                         prev.blocks.extend(blocks);
+                        // Use the latest duration — each consecutive assistant
+                        // message's duration is measured from the same user
+                        // timestamp, so the last one covers the full turn.
+                        if duration_ms.is_some() {
+                            prev.result_duration_ms = duration_ms;
+                        }
                     }
                 } else {
                     out.push(ChatMessageView {
@@ -125,7 +132,7 @@ pub async fn load_messages(cwd: &Path, session_id: &str) -> anyhow::Result<Vec<C
                         blocks,
                         status: MessageStatus::Complete,
                         tools_expanded: false,
-                        result_duration_ms: None,
+                        result_duration_ms: duration_ms,
                     });
                     next_id += 1;
                 }

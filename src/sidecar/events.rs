@@ -87,5 +87,7 @@ pub enum SidecarEvent {
         tool_events: Option<Vec<SidecarEvent>>,
         #[serde(default)]
         timestamp: Option<i64>,
+        #[serde(rename = "durationMs", default)]
+        duration_ms: Option<u64>,
     },
 }
