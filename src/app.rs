@@ -1028,18 +1028,17 @@ impl Launchpad {
                         iced::window::close(window_id)
                     }
                 } else if Some(window_id) == self.palette_window_id && self.palette_visible {
-                    // Palette lost focus → hide. Chats keep streaming
-                    // in the background; if a Claude tool call opens a
-                    // browser tab, the palette just hides and the
-                    // user re-summons to see results — strictly better
-                    // than the pre-multi-chat behavior, which left a
-                    // blurred palette hovering mid-interaction.
+                    // Palette lost focus → hide, unless we're mid-chat.
+                    // Agent tool calls can steal focus (e.g. opening a
+                    // browser tab), and we don't want that to dismiss
+                    // the palette out from under the user. Esc and the
+                    // hotkey toggle still dismiss normally; both paths
+                    // preserve chat state.
                     if self.mode == Mode::Chatting {
-                        self.active_chat_id = None;
-                        self.mode = Mode::Idle;
-                        self.input.clear();
+                        Task::none()
+                    } else {
+                        self.hide_palette()
                     }
-                    self.hide_palette()
                 } else {
                     Task::none()
                 }
