@@ -1,5 +1,19 @@
 import { query, listSessions, getSessionMessages, renameSession, tagSession } from "@anthropic-ai/claude-agent-sdk";
 import { createInterface } from "readline";
+import { existsSync } from "fs";
+
+function findClaudePath() {
+  const home = process.env.HOME || "/tmp";
+  const candidates = [
+    `${home}/.local/bin/claude`,
+    "/usr/local/bin/claude",
+    "/opt/homebrew/bin/claude",
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return undefined;
+}
 
 function emit(event) {
   process.stdout.write(JSON.stringify(event) + "\n");
@@ -97,8 +111,10 @@ async function runTurn(userPrompt) {
   emit({ type: "turn_start", timestamp: Date.now() });
   let emittedText = false;
 
+  const claudePath = findClaudePath();
   const options = {
     cwd: cwd || process.env.HOME,
+    ...(claudePath && { pathToClaudeCodeExecutable: claudePath }),
     // Use the claude_code preset. `settingSources` controls which on-disk
     // Claude settings the SDK loads:
     //   - ["project"] always loads ~/.slashpad/CLAUDE.md (seeded from
