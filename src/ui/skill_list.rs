@@ -15,6 +15,7 @@ pub fn view(
         return container(text("No matching skills").size(13).color(super::theme::MUTED))
             .padding(16)
             .width(Length::Fill)
+            .height(Length::Fill)
             .style(panel_style)
             .into();
     }
@@ -69,19 +70,21 @@ pub fn view(
         col = col.push(btn);
     }
 
-    // `max_height` bounds the scrollable so it scrolls once content
-    // exceeds the cap, while allowing the panel to shrink to content
-    // (no dead space) for short lists. Matches `MAX_LIST` in
-    // `Slashpad::target_height`.
+    // Window is fixed-height (see `Slashpad::LAUNCHER_H`), so the list
+    // fills whatever space is left after input + keyhints. The inner
+    // scrollable takes the same `Length::Fill` so content longer than
+    // the available area scrolls inside this bounded container.
     container(
         scrollable(col)
             .id(scroll_id)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .direction(super::theme::scrollbar_direction())
             .style(super::theme::scrollbar_style),
     )
         .padding([4, 0])
         .width(Length::Fill)
-        .max_height(260.0)
+        .height(Length::Fill)
         .style(panel_style)
         .into()
 }

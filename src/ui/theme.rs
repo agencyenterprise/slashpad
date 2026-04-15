@@ -127,12 +127,18 @@ pub fn dark_theme() -> Theme {
 }
 
 /// Initial iced window settings for the palette window.
+///
+/// The palette is a fixed-size card. We intentionally do NOT resize it in
+/// response to mode/content changes any more — every resize hop used to
+/// flash the NSPanel, and the UX cost of a small amount of empty space
+/// below a short list is strictly lower than that flicker. Internal
+/// scroll containers handle overflow.
 pub fn palette_window_settings() -> iced::window::Settings {
-    let h = 90.0 + super::keyhints::BAR_HEIGHT;
+    let size = iced::Size::new(crate::app::Slashpad::LAUNCHER_W, crate::app::Slashpad::LAUNCHER_H);
     iced::window::Settings {
-        size: iced::Size::new(720.0, h),
+        size,
         position: iced::window::Position::Centered,
-        min_size: Some(iced::Size::new(720.0, h)),
+        min_size: Some(size),
         max_size: None,
         visible: false,
         resizable: false,

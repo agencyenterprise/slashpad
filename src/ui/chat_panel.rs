@@ -69,7 +69,7 @@ pub fn view<'a>(
     )
         .padding([14, 0])
         .width(Length::Fill)
-        .height(Length::Fixed(480.0))
+        .height(Length::Fill)
         .style(|_theme: &iced::Theme| iced::widget::container::Style {
             background: None,
             border: iced::Border {

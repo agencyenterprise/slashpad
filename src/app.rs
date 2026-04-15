@@ -719,7 +719,7 @@ impl Slashpad {
                     if self.selected_project_index > max {
                         self.selected_project_index = 0;
                     }
-                    return self.resize_task();
+                    return Task::none();
                 }
                 if let Some(query) = value.strip_prefix('/') {
                     self.filtered_skills = if query.is_empty() {
@@ -743,7 +743,7 @@ impl Slashpad {
                     self.selected_idle_index = 0;
                     self.idle_selection_active = self.input.is_empty();
                 }
-                self.resize_task()
+                Task::none()
             }
 
             Message::ClearLauncherInput { window_id } => {
@@ -753,9 +753,6 @@ impl Slashpad {
                 if Some(window_id) == self.settings_window_id {
                     return Task::none();
                 }
-                // Already empty — skip the resize to avoid a pointless
-                // redraw (every `iced::window::resize` on macOS blits the
-                // whole window, even when the dimensions are unchanged).
                 if self.input.is_empty() {
                     return Task::none();
                 }
@@ -771,13 +768,7 @@ impl Slashpad {
                 // idle selection so Enter resumes the top row.
                 self.selected_idle_index = 0;
                 self.idle_selection_active = true;
-                // Skip the resize in Chatting mode — the follow-up draft
-                // clearing doesn't change `target_height`, so calling
-                // `resize` would just trigger a redundant redraw.
-                if self.mode == Mode::Chatting {
-                    return Task::none();
-                }
-                self.resize_task()
+                Task::none()
             }
 
             Message::Submit => self.handle_submit(),
@@ -823,10 +814,7 @@ impl Slashpad {
                     self.selected_project_index = 0;
                     self.selected_idle_index = 0;
                     self.idle_selection_active = self.input.is_empty();
-                    return Task::batch([
-                        self.resize_task(),
-                        text_input::focus(INPUT_ID.clone()),
-                    ]);
+                    return text_input::focus(INPUT_ID.clone());
                 }
                 // In Chatting mode, Esc steps back to the idle thread
                 // list instead of dismissing. The sidecar keeps streaming
@@ -840,7 +828,6 @@ impl Slashpad {
                     self.input.clear();
                     self.selected_idle_index = 0;
                     return Task::batch([
-                        self.resize_task(),
                         text_input::focus(INPUT_ID.clone()),
                         snap_to_selection(IDLE_LIST_SCROLL_ID.clone(), 0, self.idle_row_count()),
                     ]);
@@ -992,7 +979,6 @@ impl Slashpad {
                     self.mode = Mode::Chatting;
                     self.input.clear();
                     Task::batch([
-                        self.resize_task(),
                         text_input::focus(INPUT_ID.clone()),
                         snap_chat_to_bottom(),
                     ])
@@ -1013,9 +999,7 @@ impl Slashpad {
                 if self.selected_idle_index > max {
                     self.selected_idle_index = 0;
                 }
-                // Height may change if we're idle with empty input — the
-                // session list just became populated.
-                self.resize_task()
+                Task::none()
             }
 
             Message::ProjectsLoaded(projects) => {
@@ -1031,7 +1015,6 @@ impl Slashpad {
                         crate::fuzzy::filter_projects(&self.all_projects, &self.input)
                     };
                     self.selected_project_index = 0;
-                    return self.resize_task();
                 }
                 Task::none()
             }
@@ -1048,7 +1031,7 @@ impl Slashpad {
                 self.selected_project_index = 0;
                 self.mode = Mode::ProjectPicker;
                 self.discard_next_input_change = true;
-                Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())])
+                text_input::focus(INPUT_ID.clone())
             }
 
             Message::SelectProject(i) => {
@@ -1417,7 +1400,21 @@ impl Slashpad {
             .map(|e| matches!(e.state.status, ChatStatus::Idle))
             .unwrap_or(true);
         let input = ui::command_input::view(&self.input, self.mode, is_agent_ready);
-        let mut stack: Column<'_, Message> = column![input].spacing(0);
+        // `Column` defaults to `Length::Shrink` for height — but we rely on
+        // the mode-specific middle elements (lists / chat panel / spacer)
+        // being `Length::Fill` to anchor the keyhints bar to the bottom of
+        // the fixed-height window. `Length::Fill` inside a `Shrink` parent
+        // collapses to 0, so we have to make the whole vertical chain
+        // (container → card → stack) `Length::Fill` end-to-end.
+        let mut stack: Column<'_, Message> = column![input]
+            .spacing(0)
+            .height(iced::Length::Fill);
+
+        // Track whether the mode pushed a `Length::Fill` middle element
+        // (list or chat panel). If it didn't, we push a `vertical_space`
+        // filler before the keyhints so the bar stays pinned to the
+        // bottom of the fixed-height window instead of floating up.
+        let mut has_fill_middle = false;
 
         match self.mode {
             Mode::Skills => {
@@ -1433,6 +1430,7 @@ impl Slashpad {
                         self.selected_skill_index,
                         SKILL_LIST_SCROLL_ID.clone(),
                     ));
+                    has_fill_middle = true;
                 }
             }
             Mode::ProjectPicker => {
@@ -1442,6 +1440,7 @@ impl Slashpad {
                     self.selected_project_index,
                     PROJECT_PICKER_SCROLL_ID.clone(),
                 ));
+                has_fill_middle = true;
             }
             Mode::Idle if !self.input.starts_with('/') && self.idle_row_count() > 0 => {
                 // Build view-layer rows that borrow from `self`. Both
@@ -1473,6 +1472,7 @@ impl Slashpad {
                     self.spinner_frame,
                     IDLE_LIST_SCROLL_ID.clone(),
                 ));
+                has_fill_middle = true;
             }
             Mode::Chatting => {
                 if let Some(entry) = self.active_chat() {
@@ -1488,9 +1488,18 @@ impl Slashpad {
                         self.spinner_frame,
                         CHAT_SCROLL_ID.clone(),
                     ));
+                    has_fill_middle = true;
                 }
             }
             _ => {}
+        }
+
+        if !has_fill_middle {
+            // No middle panel in this mode (empty Idle, locked Skills,
+            // Chatting with no active chat, Settings fallback). Push a
+            // flexible spacer so the keyhints bar stays anchored to the
+            // bottom edge of the fixed-size window.
+            stack = stack.push(iced::widget::vertical_space().height(iced::Length::Fill));
         }
 
         stack = stack.push(ui::theme::divider());
@@ -1519,8 +1528,17 @@ impl Slashpad {
         // border around the whole stack. Individual sections (input,
         // middle panel, keyhints) render with no border/background —
         // `ui::theme::divider()` rows draw the thin section lines.
+        //
+        // Explicit `height(Fill)` matters: without it the container
+        // defaults to `Shrink`, which collapses every `Length::Fill`
+        // child inside the stack (lists, chat panel, keyhints-anchor
+        // spacer) to 0px. The rendered card then shrinks to just
+        // `input + keyhints`, leaving a tiny palette floating inside a
+        // 500px transparent window — which is the "wrong height" the
+        // user sees on first summon.
         let card = container(stack)
             .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
             .style(|_theme: &iced::Theme| iced::widget::container::Style {
                 background: Some(iced::Background::Color(ui::theme::SURFACE_1)),
                 border: iced::Border {
@@ -1611,7 +1629,7 @@ impl Slashpad {
                     self.filtered_skills =
                         crate::fuzzy::filter_skills(&self.all_skills, &query);
                     self.selected_skill_index = 0;
-                    Task::batch([self.resize_task(), text_input::focus(INPUT_ID.clone())])
+                    text_input::focus(INPUT_ID.clone())
                 } else {
                     Task::none()
                 }
@@ -1649,11 +1667,9 @@ impl Slashpad {
                 self.selected_idle_index = 0;
                 self.idle_selection_active = false;
                 // Past-sessions list is scoped per-cwd, so a project
-                // switch needs a re-fetch. `refresh_sessions` handles
-                // the height-change via its own RecentSessionsLoaded
-                // handler when the new list arrives.
+                // switch needs a re-fetch.
                 self.recent_sessions.clear();
-                Task::batch([self.refresh_sessions(), self.resize_task()])
+                self.refresh_sessions()
             }
             // In picker mode with no matches, Enter is a silent no-op
             // — don't fall through to "start chat with typed text".
@@ -1676,7 +1692,6 @@ impl Slashpad {
                             self.mode = Mode::Chatting;
                             self.input.clear();
                             Task::batch([
-                                self.resize_task(),
                                 text_input::focus(INPUT_ID.clone()),
                                 snap_chat_to_bottom(),
                             ])
@@ -1722,7 +1737,6 @@ impl Slashpad {
                 self.mode = Mode::Chatting;
                 self.input.clear();
                 return Task::batch([
-                    self.resize_task(),
                     text_input::focus(INPUT_ID.clone()),
                     snap_chat_to_bottom(),
                 ]);
@@ -1743,7 +1757,6 @@ impl Slashpad {
         self.input.clear();
 
         Task::batch([
-            self.resize_task(),
             text_input::focus(INPUT_ID.clone()),
             snap_chat_to_bottom(),
         ])
@@ -1799,7 +1812,6 @@ impl Slashpad {
             self.mode = Mode::Chatting;
             self.input.clear();
             return Task::batch([
-                self.resize_task(),
                 text_input::focus(INPUT_ID.clone()),
                 snap_chat_to_bottom(),
             ]);
@@ -1845,7 +1857,6 @@ impl Slashpad {
         // be cached / very short; the `HistoryLoaded` handler will emit
         // another snap once the background load completes.
         Task::batch([
-            self.resize_task(),
             text_input::focus(INPUT_ID.clone()),
             snap_chat_to_bottom(),
         ])
@@ -1961,7 +1972,6 @@ impl Slashpad {
         let Some(entry) = self.chats.get_mut(&chat_id) else {
             return Task::none();
         };
-        let prev_status = entry.state.status;
         // `TextDelta`, `ToolStart`, `ToolEnd`, and `Error` all append to
         // `messages` / `blocks`. `SessionId`, `Ready`, and `Complete`
         // don't add visible content so they don't need an autoscroll.
@@ -1973,23 +1983,9 @@ impl Slashpad {
                 | SidecarEvent::Error { .. }
         );
         entry.state.apply_event(event);
-        let status_changed = entry.state.status != prev_status;
         let autoscroll = entry.scroll.autoscroll;
 
         let mut tasks: Vec<Task<Message>> = Vec::new();
-        // If the palette is currently showing the idle list and a
-        // background chat's status just flipped (e.g. Initializing →
-        // Streaming or Streaming → Idle), we may need to resize: the
-        // row content changed but the row count didn't. `resize_task`
-        // is cheap, so just dispatch it whenever the status flipped
-        // and the palette is visible in idle.
-        if status_changed
-            && self.palette_visible
-            && self.mode == Mode::Idle
-            && self.input.is_empty()
-        {
-            tasks.push(self.resize_task());
-        }
         // Autoscroll: pin the chat view to the bottom whenever the
         // active chat just grew and the user hasn't scrolled away.
         if grows_content
@@ -2021,20 +2017,13 @@ impl Slashpad {
         if !matches!(entry.state.status, ChatStatus::Idle | ChatStatus::Error) {
             entry.state.status = ChatStatus::Closed;
         }
-        let mut tasks: Vec<Task<Message>> = Vec::new();
-        if self.palette_visible && self.mode == Mode::Idle && self.input.is_empty() {
-            tasks.push(self.resize_task());
-        }
         if self.palette_visible
             && self.mode == Mode::Chatting
             && self.active_chat_id == Some(chat_id)
         {
-            tasks.push(text_input::focus(INPUT_ID.clone()));
-        }
-        if tasks.is_empty() {
-            Task::none()
+            text_input::focus(INPUT_ID.clone())
         } else {
-            Task::batch(tasks)
+            Task::none()
         }
     }
 
@@ -2051,7 +2040,7 @@ impl Slashpad {
     /// How many rows the idle list currently contains — active chats
     /// first, then past sessions that aren't dupes of an active chat's
     /// session_id. Respects the live fuzzy filter on `self.input`. Used
-    /// by nav bounds and resize sizing.
+    /// by keyboard nav bounds.
     fn idle_row_count(&self) -> usize {
         self.visible_active_chat_ids().len() + self.visible_past_session_rows().len()
     }
@@ -2142,7 +2131,14 @@ impl Slashpad {
     }
 
     /// Palette launcher width. Fixed; settings has its own window.
-    const LAUNCHER_W: f32 = 720.0;
+    pub const LAUNCHER_W: f32 = 720.0;
+
+    /// Palette launcher height. Fixed — picked to sit between the idle-list
+    /// max (~390px) and the chat detail max (~610px). Keeping the window
+    /// size constant across every mode eliminates the NSPanel resize
+    /// flicker that used to fire on keystrokes, mode transitions, and
+    /// background chat-status updates.
+    pub const LAUNCHER_H: f32 = 500.0;
 
     /// Debounce window for the spurious `Unfocused` event that AppKit
     /// fires right after we open the settings window (our Accessory
@@ -2151,58 +2147,16 @@ impl Slashpad {
     /// is a genuine user-initiated click-outside and closes settings.
     const SETTINGS_BLUR_GRACE_MS: u64 = 300;
 
-    /// Desired palette window height for the current mode + content state.
-    /// Ported from the old `usePalette.ts` sizing heuristic.
-    fn target_height(&self) -> f32 {
-        const BASE: f32 = 90.0;
-        const ROW: f32 = 52.0;
-        const MAX_LIST: f32 = 260.0;
-        const CHAT: f32 = 480.0;
-        let keyhints = ui::keyhints::BAR_HEIGHT;
-        match self.mode {
-            Mode::Chatting => BASE + CHAT + keyhints,
-            // Palette never enters Settings mode now (settings is a
-            // separate window); return BASE as a safe fallback if it ever
-            // somehow does.
-            Mode::Settings => BASE + keyhints,
-            Mode::Skills => {
-                // No filter panel when the input has locked onto a
-                // concrete skill — mirrors the gate in `view()`.
-                if self.locked_skill().is_some() {
-                    BASE + keyhints
-                } else {
-                    let n = self.filtered_skills.len().max(1) as f32;
-                    BASE + (n * ROW).min(MAX_LIST) + keyhints
-                }
-            }
-            Mode::ProjectPicker => {
-                // Rows are single-line (no description), so they land
-                // shorter than skill rows. Still cap via `MAX_LIST` so
-                // huge ~/.claude/projects/ lists scroll rather than
-                // overflow the screen.
-                const PROJECT_ROW: f32 = 36.0;
-                let n = self.filtered_projects.len().max(1) as f32;
-                BASE + (n * PROJECT_ROW).min(MAX_LIST) + keyhints
-            }
-            Mode::Idle => {
-                if !self.input.starts_with('/') && self.idle_row_count() > 0 {
-                    let n = self.idle_row_count().max(1) as f32;
-                    BASE + (n * ROW).min(MAX_LIST) + keyhints
-                } else {
-                    BASE + keyhints
-                }
-            }
-        }
-    }
-
-    /// Emit an `iced::window::resize` task to match the current target
-    /// palette size, or `Task::none()` if the palette window id hasn't
-    /// been created yet.
+    /// One-shot resize to the canonical launcher size. Called only from
+    /// `show_palette()` so winit has a deterministic size when the NSPanel
+    /// gets wrapped. All other code paths that used to resize on content
+    /// change have been removed — the window is intentionally fixed-size
+    /// now to eliminate flicker.
     fn resize_task(&self) -> Task<Message> {
         let Some(id) = self.palette_window_id else {
             return Task::none();
         };
-        iced::window::resize(id, iced::Size::new(Self::LAUNCHER_W, self.target_height()))
+        iced::window::resize(id, iced::Size::new(Self::LAUNCHER_W, Self::LAUNCHER_H))
     }
 
     fn toggle_palette(&mut self) -> Task<Message> {

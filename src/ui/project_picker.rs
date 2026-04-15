@@ -22,6 +22,7 @@ pub fn view(
         )
         .padding(16)
         .width(Length::Fill)
+        .height(Length::Fill)
         .style(panel_style)
         .into();
     }
@@ -81,12 +82,14 @@ pub fn view(
     container(
         scrollable(col)
             .id(scroll_id)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .direction(super::theme::scrollbar_direction())
             .style(super::theme::scrollbar_style),
     )
     .padding([4, 0])
     .width(Length::Fill)
-    .max_height(260.0)
+    .height(Length::Fill)
     .style(panel_style)
     .into()
 }

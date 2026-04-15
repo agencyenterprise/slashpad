@@ -111,16 +111,21 @@ pub fn view<'a>(
         col = col.push(btn);
     }
 
-    // See `skill_list::view` for the `max_height` rationale.
+    // Window is fixed-height now (see `Slashpad::LAUNCHER_H`), so the
+    // list fills whatever space is left after input + keyhints. The
+    // inner scrollable takes the same `Length::Fill` so content longer
+    // than the available area scrolls inside this bounded container.
     container(
         scrollable(col)
             .id(scroll_id)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .direction(super::theme::scrollbar_direction())
             .style(super::theme::scrollbar_style),
     )
         .padding([4, 0])
         .width(Length::Fill)
-        .max_height(260.0)
+        .height(Length::Fill)
         .style(|_theme: &iced::Theme| iced::widget::container::Style {
             background: None,
             border: iced::Border {
