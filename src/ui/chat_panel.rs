@@ -1,11 +1,15 @@
 //! Streaming chat panel.
 
-use iced::widget::{container, markdown, scrollable, text, Column};
+use iced::advanced::text::Span;
+use iced::widget::{container, markdown, scrollable, Column};
 use iced::{Element, Length};
 use std::time::Instant;
 
 use crate::app::Message;
 use crate::state::{ChatMessageView, ContentBlock, MessageStatus, Role};
+
+use super::selectable_bubble;
+use super::selectable_rich_text::selectable_rich_text;
 
 /// Extra context passed from app.rs for the streaming indicator.
 pub struct StreamingContext {
@@ -85,7 +89,8 @@ pub fn view<'a>(
 
 fn user_bubble<'a>(msg: &'a ChatMessageView) -> Element<'a, Message> {
     let content = msg.flat_text();
-    container(text(content).size(13).color(super::theme::TEXT))
+    let spans = vec![Span::new(content).color(super::theme::TEXT)];
+    container(selectable_rich_text(spans).size(13))
         .padding([8, 14])
         .style(|_theme: &iced::Theme| iced::widget::container::Style {
             background: Some(iced::Background::Color(super::theme::SURFACE_3)),
@@ -209,7 +214,7 @@ fn assistant_bubble<'a>(
 fn render_markdown<'a>(
     parsed: &'a [iced::widget::markdown::Item],
 ) -> Element<'a, Message> {
-    markdown::view(
+    selectable_bubble::view(
         parsed,
         markdown::Settings {
             h1_size: 17.into(),
