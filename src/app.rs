@@ -328,6 +328,12 @@ pub enum Message {
     /// Pressing again unpins, restoring the default cursor-center-on-
     /// summon behavior.
     TogglePinPosition,
+    /// Cmd+Shift+K — toggle "sticking" the currently-active chat so
+    /// re-summoning the palette jumps back into it instead of resetting
+    /// to the Skills/`/` prefill. No-op outside `Mode::Chatting`.
+    /// Auto-released by `reconcile_stuck()` whenever the user navigates
+    /// away from the stuck chat.
+    ToggleStickyChat,
     /// Resolution of the `iced::window::get_position` lookup kicked off
     /// by a fresh pin. Arrives after the async runtime reads the
     /// palette's actual on-screen position; we commit it as
@@ -450,6 +456,13 @@ pub struct Slashpad {
     /// the pin tracking the new location. Cleared only by a second
     /// Cmd+Shift+P (unpin).
     pub pinned_position: Option<iced::Point>,
+    /// Chat the user has "stuck" via Cmd+Shift+K. While `Some`,
+    /// `show_palette()` opens directly into this chat instead of resetting
+    /// to the Skills prefill. Auto-cleared by `reconcile_stuck()` whenever
+    /// the user navigates away (mode leaves `Chatting`, or `active_chat_id`
+    /// switches to a different chat). In-memory only — does not persist
+    /// across app restarts.
+    pub stuck_chat_id: Option<ChatId>,
     /// Armed right before we issue `iced::window::move_to` so the
     /// `window::Event::Moved` fired by that programmatic move isn't
     /// mistaken for a user drag. Cleared by the first `WindowMoved`
@@ -544,6 +557,7 @@ impl Slashpad {
             input_before_picker: None,
             dragged_position: None,
             pinned_position: None,
+            stuck_chat_id: None,
             programmatic_move_pending: false,
         };
 
@@ -746,6 +760,12 @@ impl Slashpad {
         {
             return Some(Message::TogglePinPosition);
         }
+        if modifiers.command()
+            && modifiers.shift()
+            && matches!(key.as_ref(), Key::Character("k") | Key::Character("K"))
+        {
+            return Some(Message::ToggleStickyChat);
+        }
         if modifiers.command() && matches!(key.as_ref(), Key::Character("p")) {
             return Some(Message::OpenProjectPicker);
         }
@@ -781,6 +801,33 @@ impl Slashpad {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.dispatch_update(message);
+        // Single choke point for the sticky-chat invariant: any message
+        // that changed mode or switched the active chat may have violated
+        // "stuck_chat_id points at the currently-viewed chat" — clear it
+        // if so, so navigating away from a stuck chat auto-releases the
+        // stick without every transition handler having to know.
+        self.reconcile_stuck();
+        task
+    }
+
+    /// Enforce the sticky-chat invariant: `stuck_chat_id` must match the
+    /// currently-active chat in `Mode::Chatting`. Any other state means
+    /// the user has navigated away from the stuck chat, so the stick is
+    /// released.
+    fn reconcile_stuck(&mut self) {
+        if self.stuck_chat_id.is_none() {
+            return;
+        }
+        let still_stuck = self.mode == Mode::Chatting
+            && self.active_chat_id.is_some()
+            && self.active_chat_id == self.stuck_chat_id;
+        if !still_stuck {
+            self.stuck_chat_id = None;
+        }
+    }
+
+    fn dispatch_update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::InputChanged(value) => {
                 // `ShortcutFilter` (wrapping the launcher text_input)
@@ -1276,6 +1323,23 @@ impl Slashpad {
                 Task::none()
             }
 
+            Message::ToggleStickyChat => {
+                // Only meaningful while viewing a chat. No-op otherwise —
+                // there's nothing to stick.
+                if self.mode != Mode::Chatting {
+                    return Task::none();
+                }
+                let Some(active) = self.active_chat_id else {
+                    return Task::none();
+                };
+                self.stuck_chat_id = if self.stuck_chat_id == Some(active) {
+                    None
+                } else {
+                    Some(active)
+                };
+                Task::none()
+            }
+
             Message::PinCurrentPosition(point) => {
                 if let Some(p) = point {
                     // Only commit if the user hasn't managed to drag or
@@ -1704,6 +1768,8 @@ impl Slashpad {
                 skill_locked: self.locked_skill().is_some(),
                 project_path_display: display_project_path(&self.project_path),
                 position_pinned: self.pinned_position.is_some(),
+                stuck_chat: self.stuck_chat_id.is_some()
+                    && self.stuck_chat_id == self.active_chat_id,
             },
         ));
 
@@ -2361,14 +2427,34 @@ impl Slashpad {
 
     fn show_palette(&mut self) -> Task<Message> {
         self.palette_visible = true;
-        // Always open into the skills picker with "/" prefilled. Users
-        // reach the unified Idle list (active chats + past sessions) by
-        // backspacing the "/" away — `Message::InputChanged` flips the
-        // mode to Idle automatically when the leading "/" is removed.
-        self.mode = Mode::Skills;
-        self.input = "/".to_string();
-        self.filtered_skills = self.all_skills.clone();
-        self.selected_skill_index = 0;
+        // If the user has stuck a chat (Cmd+Shift+K) and that chat is
+        // still alive, skip the Skills prefill and re-enter the chat
+        // directly. Otherwise fall through to the default "open into
+        // Skills with `/` prefilled" behavior.
+        let has_stuck = self
+            .stuck_chat_id
+            .map(|id| self.chats.contains_key(&id))
+            .unwrap_or(false);
+
+        if has_stuck {
+            self.mode = Mode::Chatting;
+            self.active_chat_id = self.stuck_chat_id;
+            self.input.clear();
+        } else {
+            // Defensive: drop any dangling stuck id for a chat that's
+            // since been closed, so the next reconcile doesn't wipe
+            // it unnecessarily.
+            self.stuck_chat_id = None;
+            // Default: open into the skills picker with "/" prefilled.
+            // Users reach the unified Idle list (active chats + past
+            // sessions) by backspacing the "/" away —
+            // `Message::InputChanged` flips the mode to Idle automatically
+            // when the leading "/" is removed.
+            self.mode = Mode::Skills;
+            self.input = "/".to_string();
+            self.filtered_skills = self.all_skills.clone();
+            self.selected_skill_index = 0;
+        }
         // Never clear `self.chats` or `self.active_chat_id` — those
         // carry the state the user expects to come back to.
 

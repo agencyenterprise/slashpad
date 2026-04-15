@@ -45,6 +45,12 @@ pub struct KeyhintContext {
     /// True when the user has explicitly pinned the palette's position
     /// via Cmd+Shift+P. Swaps the hint label from "Pin" to "Unpin".
     pub position_pinned: bool,
+    /// True when the active chat is currently "stuck" via Cmd+Shift+K —
+    /// meaning re-summoning the palette will reopen this chat instead of
+    /// the Skills prefill. Shows a `⌘⇧K Release` hint in the right
+    /// cluster of the keyhints bar (left of `↵`). Only meaningful in
+    /// `Mode::Chatting`.
+    pub stuck_chat: bool,
 }
 
 /// Fixed footer height reserved for the keyhints bar, used by
@@ -105,10 +111,31 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
     // runs its own hint set). If the palette is unpinned, pressing the
     // chord pins it wherever it currently sits — including the default
     // cursor-centered position on first summon. Partitioned into the
-    // left cluster below so it renders right beside `esc`.
+    // left cluster below so it renders right beside `esc`. Label
+    // disambiguates from the sticky-chat shortcut — both exist, and
+    // "window" vs "chat" makes clear which object each acts on.
     if !matches!(mode, Mode::Settings) {
-        let label = if ctx.position_pinned { "Unpin" } else { "Pin" };
+        let label = if ctx.position_pinned {
+            "Unpin window"
+        } else {
+            "Pin window"
+        };
         hints.push(("⌘⇧P", label));
+    }
+
+    // Sticky-chat affordance: visible whenever the user is viewing a
+    // chat, stuck or not, so the shortcut is discoverable. Label flips
+    // "Stick chat" → "Unstick chat" to mirror the Pin/Unpin idiom
+    // above. Prepended to `hints` so after the left-cluster partition
+    // it lands at index 0 of the right cluster — i.e. visually to the
+    // immediate left of the `↵` hint.
+    if matches!(mode, Mode::Chatting) {
+        let label = if ctx.stuck_chat {
+            "Unstick chat"
+        } else {
+            "Stick chat"
+        };
+        hints.insert(0, ("⌘⇧K", label));
     }
 
     // Left cluster: `esc`, `⌘⇧P`, and `ctrl c` render flush-left in
