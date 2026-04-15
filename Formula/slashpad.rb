@@ -30,8 +30,7 @@ class Slashpad < Formula
     libexec.install "package.json"
 
     resource("bun").stage do
-      bun_bin = Pathname.glob("bun-darwin-*/bun").first
-      (libexec/"bin").install bun_bin
+      (libexec/"bin").install "bun"
       chmod 0755, libexec/"bin/bun"
     end
 
