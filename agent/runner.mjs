@@ -125,6 +125,7 @@ async function runTurn(userPrompt) {
     //     "Load user-level Claude settings & skills" checkbox is on.
     systemPrompt: { type: "preset", preset: "claude_code" },
     allowedTools: ["Read", "Write", "Bash", "Glob", "Grep", "Skill"],
+    disallowedTools: ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"],
     settingSources: payload.loadUserSettings ? ["user", "project"] : ["project"],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
