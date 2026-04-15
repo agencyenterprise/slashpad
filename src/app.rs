@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::sync::{LazyLock, Mutex, OnceLock};
 
 use iced::futures::{SinkExt, Stream};
-use iced::widget::{column, container, scrollable, text_input, Column};
+use iced::widget::{column, container, mouse_area, scrollable, text_input, Column, Space};
 use iced::{Element, Subscription, Task, Theme};
 
 /// Stable scrollable ids so `scrollable::snap_to` can target the skill and
@@ -318,6 +318,31 @@ pub enum Message {
     OpenSessionInTerminal,
     /// The user picked a new terminal from the settings dropdown.
     PreferredTerminalChanged(PreferredTerminal),
+    /// User pressed the mouse down inside the invisible drag strip at
+    /// the top of the palette — kick off a native OS window drag that
+    /// follows the cursor until the mouse button is released.
+    DragWindow,
+    /// Cmd+Shift+P — toggle pinning the palette's current position.
+    /// Pinning locks the current position permanently (survives new
+    /// chats, which otherwise clear the softer `dragged_position`).
+    /// Pressing again unpins, restoring the default cursor-center-on-
+    /// summon behavior.
+    TogglePinPosition,
+    /// Resolution of the `iced::window::get_position` lookup kicked off
+    /// by a fresh pin. Arrives after the async runtime reads the
+    /// palette's actual on-screen position; we commit it as
+    /// `pinned_position`. `None` means the window wasn't available
+    /// (shouldn't happen while the palette is visible, but handled as a
+    /// no-op rather than panicking).
+    PinCurrentPosition(Option<iced::Point>),
+    /// Window position changed. Fired both by user drags and by our own
+    /// programmatic `iced::window::move_to` calls; `update` distinguishes
+    /// them via `programmatic_move_pending` so only user drags are
+    /// persisted into `dragged_position`.
+    WindowMoved {
+        window_id: iced::window::Id,
+        position: iced::Point,
+    },
 }
 
 /// Root application state.
@@ -418,6 +443,30 @@ pub struct Slashpad {
     /// into the input. Set true when entering the picker; cleared by
     /// the `InputChanged` handler after it swallows the leaked char.
     pub discard_next_input_change: bool,
+
+    /// Position the user has dragged the palette window to. When `Some`,
+    /// `show_palette()` skips the cursor-center `move_to` and lets the
+    /// NSPanel reappear wherever the user last left it. Reset to `None`
+    /// whenever `start_chat` / `start_chat_detached` creates a fresh
+    /// chat, so each new chat opens at the cursor again.
+    pub dragged_position: Option<iced::Point>,
+    /// Position the user has *explicitly pinned* via Cmd+Shift+P. Pinning
+    /// makes the position permanent: unlike `dragged_position`, it is
+    /// NOT cleared when a new chat starts. Dragging while pinned keeps
+    /// the pin tracking the new location. Cleared only by a second
+    /// Cmd+Shift+P (unpin).
+    pub pinned_position: Option<iced::Point>,
+    /// Armed right before we issue `iced::window::move_to` so the
+    /// `window::Event::Moved` fired by that programmatic move isn't
+    /// mistaken for a user drag. Cleared by the first `WindowMoved`
+    /// observed after arming.
+    pub programmatic_move_pending: bool,
+    /// One-shot flag: strip exactly one trailing 'p'/'P' from the next
+    /// `InputChanged`. Set by `TogglePinPosition` because `listen_with`
+    /// observes Cmd+Shift+P without consuming it, so iced's text_input
+    /// still inserts the shifted letter. Unlike `discard_next_input_change`
+    /// this preserves the user's in-progress prompt instead of wiping it.
+    pub discard_next_pin_char: bool,
 }
 
 impl Slashpad {
@@ -506,6 +555,10 @@ impl Slashpad {
             selected_project_index: 0,
             input_before_picker: None,
             discard_next_input_change: false,
+            dragged_position: None,
+            pinned_position: None,
+            programmatic_move_pending: false,
+            discard_next_pin_char: false,
         };
 
         // Tray icon creation must happen on the main thread AFTER the
@@ -610,6 +663,19 @@ impl Slashpad {
                     {
                         return Some(Message::OpenSessionInTerminal);
                     }
+                    // Cmd+Shift+P toggles pinning the palette's dragged
+                    // position. Checked before plain Cmd+P so the
+                    // shifted chord doesn't fall through to the project
+                    // picker. iced delivers the shifted character as
+                    // "P" uppercase on most keymaps, but we accept
+                    // either casing in case a custom layout skips the
+                    // shift translation under Cmd.
+                    if modifiers.command()
+                        && modifiers.shift()
+                        && matches!(key.as_ref(), Key::Character("p") | Key::Character("P"))
+                    {
+                        return Some(Message::TogglePinPosition);
+                    }
                     if modifiers.command()
                         && matches!(key.as_ref(), Key::Character("p"))
                     {
@@ -635,6 +701,12 @@ impl Slashpad {
                 }
                 iced::Event::Window(iced::window::Event::Focused) => {
                     Some(Message::WindowFocused(window_id))
+                }
+                iced::Event::Window(iced::window::Event::Moved(point)) => {
+                    Some(Message::WindowMoved {
+                        window_id,
+                        position: point,
+                    })
                 }
                 _ => None,
             }),
@@ -689,6 +761,22 @@ impl Slashpad {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::InputChanged(value) => {
+                // Swallow the stray 'P' from Cmd+Shift+P (toggle pin).
+                // Same leak mechanic as Cmd+P, but we preserve whatever
+                // the user was typing: only the trailing character gets
+                // stripped, not the whole field. If the incoming value
+                // doesn't end with 'p'/'P', treat it as a real keystroke
+                // (the listener's event was swallowed elsewhere) and fall
+                // through to normal processing.
+                if self.discard_next_pin_char {
+                    self.discard_next_pin_char = false;
+                    if value.ends_with('p') || value.ends_with('P') {
+                        let mut trimmed = value.clone();
+                        trimmed.pop();
+                        self.input = trimmed;
+                        return Task::none();
+                    }
+                }
                 // Swallow the stray 'p' from Cmd+P: the global
                 // listen_with observes the keypress but doesn't
                 // consume it, so iced's text_input also inserts it.
@@ -1116,6 +1204,94 @@ impl Slashpad {
                 Task::none()
             }
 
+            Message::DragWindow => {
+                if let Some(id) = self.palette_window_id {
+                    iced::window::drag(id)
+                } else {
+                    Task::none()
+                }
+            }
+
+            Message::WindowMoved {
+                window_id,
+                position,
+            } => {
+                // Only the palette is user-draggable; the settings window
+                // is positioned relative to the tray icon on open and
+                // doesn't participate in the restore-last-position dance.
+                if Some(window_id) == self.palette_window_id {
+                    if self.programmatic_move_pending {
+                        // Our own `move_to` in `show_palette` — eat the
+                        // event without updating `dragged_position` so
+                        // the next cursor-center open doesn't look like
+                        // a user drag.
+                        self.programmatic_move_pending = false;
+                    } else {
+                        self.dragged_position = Some(position);
+                        // If the user drags while pinned, the pin follows:
+                        // otherwise they'd have to unpin-drag-repin to
+                        // relocate a pinned palette, which is annoying.
+                        if self.pinned_position.is_some() {
+                            self.pinned_position = Some(position);
+                        }
+                    }
+                }
+                Task::none()
+            }
+
+            Message::TogglePinPosition => {
+                // text_input receives the shifted-P press too; eat the
+                // trailing character from the next InputChanged so it
+                // doesn't land in whatever prompt the user was typing.
+                self.discard_next_pin_char = true;
+
+                if self.pinned_position.is_some() {
+                    // Unpin → full reset to the default cursor-centered
+                    // behavior. Clear both stored positions and actively
+                    // move the window back now so the user sees the
+                    // effect immediately (not on next hide/show).
+                    self.pinned_position = None;
+                    self.dragged_position = None;
+                    #[cfg(target_os = "macos")]
+                    if let Some(id) = self.palette_window_id {
+                        if let Some((x, y)) = crate::platform::macos::cursor_palette_position(
+                            Self::LAUNCHER_W as f64,
+                        ) {
+                            self.programmatic_move_pending = true;
+                            return iced::window::move_to(
+                                id,
+                                iced::Point::new(x as f32, y as f32),
+                            );
+                        }
+                    }
+                } else if self.dragged_position.is_some() {
+                    // Snapshot the known dragged position as the pin.
+                    self.pinned_position = self.dragged_position;
+                } else if let Some(id) = self.palette_window_id {
+                    // User hasn't dragged yet — pin wherever the palette
+                    // currently sits on screen. We don't track position
+                    // continuously (the `programmatic_move_pending` flag
+                    // swallows the initial cursor-center `Moved` event
+                    // so it isn't mistaken for a drag), so read it now
+                    // via `get_position`. The resolved Task dispatches
+                    // `PinCurrentPosition` which commits the value.
+                    return iced::window::get_position(id).map(Message::PinCurrentPosition);
+                }
+                Task::none()
+            }
+
+            Message::PinCurrentPosition(point) => {
+                if let Some(p) = point {
+                    // Only commit if the user hasn't managed to drag or
+                    // toggle in the tiny window between kicking off the
+                    // async read and this handler firing.
+                    if self.pinned_position.is_none() && self.dragged_position.is_none() {
+                        self.pinned_position = Some(p);
+                    }
+                }
+                Task::none()
+            }
+
             Message::ApiKeyInputChanged(v) => {
                 self.api_key_input = v;
                 // Save-on-change: persist whatever is currently in the
@@ -1400,13 +1576,24 @@ impl Slashpad {
             .map(|e| matches!(e.state.status, ChatStatus::Idle))
             .unwrap_or(true);
         let input = ui::command_input::view(&self.input, self.mode, is_agent_ready);
+        // Invisible 8px drag handle at the very top of the card. Clicks
+        // here fire `Message::DragWindow` which starts a native OS window
+        // drag (iced::window::drag → winit → performWindowDragWithEvent:).
+        // Not mode-gated: "drag the window by its top edge" works in every
+        // mode uniformly. The strip sits above `input` so text-input focus
+        // clicks stay untouched — the input has its own hit rect below.
+        let drag_strip: Element<'_, Message> = mouse_area(
+            Space::new(iced::Length::Fill, iced::Length::Fixed(8.0)),
+        )
+        .on_press(Message::DragWindow)
+        .into();
         // `Column` defaults to `Length::Shrink` for height — but we rely on
         // the mode-specific middle elements (lists / chat panel / spacer)
         // being `Length::Fill` to anchor the keyhints bar to the bottom of
         // the fixed-height window. `Length::Fill` inside a `Shrink` parent
         // collapses to 0, so we have to make the whole vertical chain
         // (container → card → stack) `Length::Fill` end-to-end.
-        let mut stack: Column<'_, Message> = column![input]
+        let mut stack: Column<'_, Message> = column![drag_strip, input]
             .spacing(0)
             .height(iced::Length::Fill);
 
@@ -1521,6 +1708,7 @@ impl Slashpad {
                     .unwrap_or(false),
                 skill_locked: self.locked_skill().is_some(),
                 project_path_display: display_project_path(&self.project_path),
+                position_pinned: self.pinned_position.is_some(),
             },
         ));
 
@@ -1715,6 +1903,11 @@ impl Slashpad {
     }
 
     fn start_chat(&mut self, prompt: String) -> Task<Message> {
+        // Fresh chat → forget any position the user dragged the palette
+        // to during a previous chat. The next `show_palette()` will
+        // cursor-center again, matching the "new task, fresh location"
+        // UX the user confirmed.
+        self.dragged_position = None;
         let chat_id = self.alloc_chat_id();
         let spawned = match self.spawn_sidecar_chat(chat_id, prompt.clone(), None) {
             Ok(s) => s,
@@ -1766,6 +1959,10 @@ impl Slashpad {
     /// Used by the Cmd+Enter "fire & forget" flow: the chat streams in
     /// the background and the palette is dismissed immediately.
     fn start_chat_detached(&mut self, prompt: String) -> Task<Message> {
+        // Same reset as `start_chat` — Cmd+Enter "fire and forget" is
+        // still a new chat, so the next palette summon should cursor-
+        // follow rather than snap back to the previous drag position.
+        self.dragged_position = None;
         let chat_id = self.alloc_chat_id();
         match self.spawn_sidecar_chat(chat_id, prompt.clone(), None) {
             Ok(spawned) => {
@@ -2201,14 +2398,27 @@ impl Slashpad {
 
         let mut tasks: Vec<Task<Message>> = Vec::with_capacity(4);
         tasks.push(style_task);
+        // Skip cursor-centering if the user has previously dragged the
+        // palette in this session (or pinned it permanently): the
+        // NSPanel retains its frame across `orderOut`/`orderFrontRegardless`,
+        // so letting it reappear where they put it is the "just show it
+        // where I left it" experience. `dragged_position` is cleared by
+        // `start_chat` / `start_chat_detached` so each fresh chat cursor-
+        // follows; `pinned_position` is NOT cleared there — that's the
+        // whole point of pinning.
         #[cfg(target_os = "macos")]
-        if let Some((x, y)) =
-            crate::platform::macos::cursor_palette_position(Self::LAUNCHER_W as f64)
-        {
-            tasks.push(iced::window::move_to(
-                id,
-                iced::Point::new(x as f32, y as f32),
-            ));
+        if self.dragged_position.is_none() && self.pinned_position.is_none() {
+            if let Some((x, y)) =
+                crate::platform::macos::cursor_palette_position(Self::LAUNCHER_W as f64)
+            {
+                // Arm the flag so the `Moved` event fired by this
+                // programmatic move doesn't get logged as a user drag.
+                self.programmatic_move_pending = true;
+                tasks.push(iced::window::move_to(
+                    id,
+                    iced::Point::new(x as f32, y as f32),
+                ));
+            }
         }
         tasks.push(self.resize_task());
         tasks.push(text_input::focus(INPUT_ID.clone()));

@@ -42,6 +42,9 @@ pub struct KeyhintContext {
     /// Tilde-abbreviated display of the directory Claude Code is running
     /// in (e.g. `~/.slashpad`). Rendered centered in the bar.
     pub project_path_display: String,
+    /// True when the user has explicitly pinned the palette's position
+    /// via Cmd+Shift+P. Swaps the hint label from "Pin" to "Unpin".
+    pub position_pinned: bool,
 }
 
 /// Fixed footer height reserved for the keyhints bar, used by
@@ -53,7 +56,7 @@ pub struct KeyhintContext {
 pub const BAR_HEIGHT: f32 = 40.0;
 
 pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
-    let hints: Vec<(&'static str, &'static str)> = match mode {
+    let mut hints: Vec<(&'static str, &'static str)> = match mode {
         Mode::Idle if ctx.selection_active && ctx.has_rows => vec![
             ("↵", "Open"),
             ("↑↓", "Navigate"),
@@ -98,10 +101,33 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         Mode::Settings => vec![],
     };
 
-    // Split: `esc` and `ctrl c` hints render flush-left (as a pair,
-    // in vec order), everything else flush-right.
-    let (left, right): (Vec<_>, Vec<_>) =
-        hints.into_iter().partition(|(key, _)| *key == "esc" || *key == "ctrl c");
+    // Pin/unpin affordance: always visible (except in Settings, which
+    // runs its own hint set). If the palette is unpinned, pressing the
+    // chord pins it wherever it currently sits — including the default
+    // cursor-centered position on first summon. Partitioned into the
+    // left cluster below so it renders right beside `esc`.
+    if !matches!(mode, Mode::Settings) {
+        let label = if ctx.position_pinned { "Unpin" } else { "Pin" };
+        hints.push(("⌘⇧P", label));
+    }
+
+    // Left cluster: `esc`, `⌘⇧P`, and `ctrl c` render flush-left in
+    // that fixed order (so `⌘⇧P` always sits immediately right of
+    // `esc`, regardless of each mode's original vec ordering).
+    // Everything else flows flush-right preserving source order.
+    const LEFT_ORDER: [&str; 3] = ["esc", "⌘⇧P", "ctrl c"];
+    let (left_unordered, right): (Vec<_>, Vec<_>) = hints
+        .into_iter()
+        .partition(|(key, _)| LEFT_ORDER.iter().any(|k| k == key));
+    let left: Vec<(&'static str, &'static str)> = LEFT_ORDER
+        .iter()
+        .filter_map(|desired| {
+            left_unordered
+                .iter()
+                .find(|(k, _)| k == desired)
+                .copied()
+        })
+        .collect();
 
     let mut bar: Row<'static, Message> = Row::new().spacing(12).align_y(iced::Alignment::Center);
     for (key, label) in left {
