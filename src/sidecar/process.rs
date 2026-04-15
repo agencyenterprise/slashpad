@@ -97,6 +97,22 @@ fn command_exists(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Build a PATH that includes common binary locations that may be missing
+/// when launched as a macOS service (launchd provides only /usr/bin:/bin:/usr/sbin:/sbin).
+fn augmented_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let extra = [
+        format!("{home}/.local/bin"),        // Claude CLI (official installer)
+        "/opt/homebrew/bin".to_string(),      // Homebrew (Apple Silicon)
+        "/usr/local/bin".to_string(),         // Homebrew (Intel) / common tools
+    ];
+    let current = std::env::var("PATH").unwrap_or_default();
+    let mut parts: Vec<&str> = extra.iter().map(|s| s.as_str()).collect();
+    parts.extend(current.split(':'));
+    parts.dedup();
+    parts.join(":")
+}
+
 /// Spawn the sidecar for the given payload and return handles for event draining
 /// and follow-up message sending.
 pub fn spawn(payload: Payload) -> std::io::Result<SpawnedSidecar> {
@@ -107,6 +123,7 @@ pub fn spawn(payload: Payload) -> std::io::Result<SpawnedSidecar> {
     let mut cmd = Command::new(&runtime);
     cmd.arg(&runner)
         .arg(&encoded)
+        .env("PATH", augmented_path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
