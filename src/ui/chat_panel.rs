@@ -211,7 +211,12 @@ fn render_markdown<'a>(
 ) -> Element<'a, Message> {
     markdown::view(
         parsed,
-        markdown::Settings::with_text_size(13),
+        markdown::Settings {
+            h1_size: 17.into(),
+            h2_size: 15.into(),
+            h3_size: 14.into(),
+            ..markdown::Settings::with_text_size(13)
+        },
         markdown::Style::from_palette(super::theme::dark_theme().palette()),
     )
     .map(Message::MarkdownLinkClicked)
