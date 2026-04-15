@@ -1,8 +1,8 @@
 class Slashpad < Formula
   desc "Desktop AI command palette powered by Claude"
   homepage "https://github.com/agencyenterprise/slashpad"
-  url "https://github.com/agencyenterprise/slashpad/archive/refs/tags/v0.1.5.tar.gz"
-  sha256 "38b281185d2ba9b10e746f6b1ca1a8b2d766f3472f2d70952d36f3e7e6994a97"
+  url "https://github.com/agencyenterprise/slashpad/archive/refs/tags/v0.1.6.tar.gz"
+  sha256 "4e799593665dd3de2bdd03f8c57475417509554f15cd415f0b7827ab880e7cca"
   license "MIT"
 
   # To update: change BUN_VERSION, then run:
