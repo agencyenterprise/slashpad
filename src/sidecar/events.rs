@@ -18,18 +18,37 @@ pub enum SidecarEvent {
     /// Tool call beginning.
     ToolStart {
         tool: String,
+        #[serde(rename = "toolUseId", default)]
+        tool_use_id: Option<String>,
         #[serde(default)]
         args: Option<BTreeMap<String, serde_json::Value>>,
         #[serde(default)]
         timestamp: Option<i64>,
     },
-    /// Tool call ending.
+    /// Tool call ending. Emitted when the assistant finishes streaming its
+    /// tool_use block — *before* the tool actually runs. Success/error
+    /// status arrives separately via `ToolResult`.
     ToolEnd {
         tool: String,
+        #[serde(rename = "toolUseId", default)]
+        tool_use_id: Option<String>,
         #[serde(default)]
         args: Option<BTreeMap<String, serde_json::Value>>,
         #[serde(default)]
         result: Option<String>,
+        #[serde(default)]
+        timestamp: Option<i64>,
+    },
+    /// Tool execution result — emitted when the SDK's `user` message
+    /// containing a `tool_result` block arrives. Links back to a prior
+    /// `ToolEnd` via `tool_use_id`.
+    ToolResult {
+        #[serde(rename = "toolUseId")]
+        tool_use_id: String,
+        #[serde(default)]
+        content: Option<String>,
+        #[serde(rename = "isError", default)]
+        is_error: bool,
         #[serde(default)]
         timestamp: Option<i64>,
     },

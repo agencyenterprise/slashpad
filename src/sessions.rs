@@ -68,35 +68,84 @@ pub async fn load_messages(cwd: &Path, session_id: &str) -> anyhow::Result<Vec<C
                 if let Some(events) = tool_events {
                     for ev in events {
                         match ev {
-                            SidecarEvent::ToolStart { tool, args, .. } => {
+                            SidecarEvent::ToolStart {
+                                tool,
+                                tool_use_id,
+                                args,
+                                ..
+                            } => {
                                 blocks.push(ContentBlock::ToolStart {
                                     tool,
+                                    tool_use_id,
                                     args: args.unwrap_or_default(),
                                 });
                             }
                             SidecarEvent::ToolEnd {
                                 tool,
+                                tool_use_id,
                                 args,
                                 result,
                                 ..
                             } => {
                                 // Replace matching ToolStart, same as the
                                 // streaming path in ChatState::apply_event.
-                                let replaced = blocks.iter_mut().rev().find(|b| {
-                                    matches!(b, ContentBlock::ToolStart { tool: t, .. } if t == &tool)
+                                let tool_use_id_ref = tool_use_id.clone();
+                                let replaced = blocks.iter_mut().rev().find(|b| match b {
+                                    ContentBlock::ToolStart {
+                                        tool_use_id: id,
+                                        tool: t,
+                                        ..
+                                    } => match (id, &tool_use_id_ref) {
+                                        (Some(a), Some(b)) => a == b,
+                                        _ => t == &tool,
+                                    },
+                                    _ => false,
                                 });
                                 if let Some(slot) = replaced {
                                     *slot = ContentBlock::ToolEnd {
                                         tool,
+                                        tool_use_id,
                                         args: args.unwrap_or_default(),
                                         result,
+                                        is_error: false,
                                     };
                                 } else {
                                     blocks.push(ContentBlock::ToolEnd {
                                         tool,
+                                        tool_use_id,
                                         args: args.unwrap_or_default(),
                                         result,
+                                        is_error: false,
                                     });
+                                }
+                            }
+                            SidecarEvent::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                                ..
+                            } => {
+                                // Patch the previously-appended ToolEnd with
+                                // the real result text + error flag from the
+                                // historical user message.
+                                let patched =
+                                    blocks.iter_mut().rev().find_map(|b| match b {
+                                        ContentBlock::ToolEnd {
+                                            tool_use_id: Some(id),
+                                            ..
+                                        } if id == &tool_use_id => Some(b),
+                                        _ => None,
+                                    });
+                                if let Some(ContentBlock::ToolEnd {
+                                    result,
+                                    is_error: err_slot,
+                                    ..
+                                }) = patched
+                                {
+                                    if content.is_some() {
+                                        *result = content;
+                                    }
+                                    *err_slot = is_error;
                                 }
                             }
                             _ => {}

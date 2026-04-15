@@ -54,11 +54,15 @@ if (mode === "messages") {
       includeSystemMessages: false,
     });
     let lastUserTimestamp = null;
+    // Collect tool_result blocks from user messages so we can retroactively
+    // attach them to the assistant message that invoked the tool, keyed by
+    // tool_use_id. This lets historical views show which tool calls errored.
+    const pendingToolResults = new Map(); // tool_use_id -> { content, isError }
     for (const msg of messages) {
       if (msg.type === "user") {
-        // Extract text content from user message
         const message = msg.message;
         let content = "";
+        let hasToolResult = false;
         if (typeof message === "string") {
           content = message;
         } else if (message?.content) {
@@ -66,13 +70,31 @@ if (mode === "messages") {
           if (typeof message.content === "string") {
             content = message.content;
           } else if (Array.isArray(message.content)) {
-            content = message.content
-              .filter((b) => b.type === "text")
-              .map((b) => b.text)
-              .join("");
+            for (const block of message.content) {
+              if (block?.type === "text" && typeof block.text === "string") {
+                content += block.text;
+              } else if (block?.type === "tool_result" && block.tool_use_id) {
+                hasToolResult = true;
+                let resultText = "";
+                if (typeof block.content === "string") {
+                  resultText = block.content;
+                } else if (Array.isArray(block.content)) {
+                  resultText = block.content
+                    .filter((b) => b?.type === "text" && typeof b.text === "string")
+                    .map((b) => b.text)
+                    .join("\n");
+                }
+                pendingToolResults.set(block.tool_use_id, {
+                  content: resultText,
+                  isError: block.is_error === true,
+                });
+              }
+            }
           }
         }
-        if (content) {
+        // Only emit a user chat_message for real user input — skip synthetic
+        // messages that are purely tool_result envelopes.
+        if (content && !hasToolResult) {
           emit({ type: "chat_message", role: "user", content, timestamp: Date.now() });
           lastUserTimestamp = msg.timestamp ? new Date(msg.timestamp).getTime() : null;
         }
@@ -85,7 +107,25 @@ if (mode === "messages") {
           if (block.type === "text" && block.text) {
             content += block.text;
           } else if (block.type === "tool_use") {
-            toolEvents.push({ type: "tool_end", tool: block.name, args: block.input, timestamp: Date.now() });
+            const pending = pendingToolResults.get(block.id);
+            toolEvents.push({
+              type: "tool_end",
+              tool: block.name,
+              toolUseId: block.id,
+              args: block.input,
+              result: pending?.content ?? null,
+              timestamp: Date.now(),
+            });
+            if (pending) {
+              toolEvents.push({
+                type: "tool_result",
+                toolUseId: block.id,
+                content: pending.content,
+                isError: pending.isError,
+                timestamp: Date.now(),
+              });
+              pendingToolResults.delete(block.id);
+            }
           }
         }
         if (content || toolEvents.length > 0) {
@@ -124,11 +164,55 @@ async function runTurn(userPrompt) {
     //     personal CLAUDE.md, skills, and hooks — when the Settings
     //     "Load user-level Claude settings & skills" checkbox is on.
     systemPrompt: { type: "preset", preset: "claude_code" },
-    allowedTools: ["Read", "Write", "Bash", "Glob", "Grep", "Skill"],
+    // --- Permissions ---
+    //
+    // The Agent SDK evaluates a tool call in this order (see
+    // https://code.claude.com/en/agent-sdk/permissions):
+    //   1. Hooks
+    //   2. Deny rules (disallowedTools + settings.json deny) — ALWAYS win,
+    //      even under bypassPermissions
+    //   3. Permission mode — bypassPermissions approves everything here
+    //   4. Allow rules (allowedTools + settings.json allow)
+    //   5. canUseTool callback
+    //
+    // We run in bypassPermissions, so step 3 approves every tool that
+    // isn't denied in step 2. That means:
+    //   - `allowedTools` would be redundant here (docs are explicit:
+    //     "Setting allowed_tools=['Read'] alongside bypassPermissions
+    //     still approves every tool"). Not set.
+    //   - `disallowedTools` is the only thing that actually blocks tools
+    //     in bypass mode. EnterPlanMode / ExitPlanMode / AskUserQuestion
+    //     don't belong in a one-shot command palette.
     disallowedTools: ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"],
+    // Widen the filesystem scope beyond cwd. The docs note (for
+    // acceptEdits) that scope is gated on cwd + additionalDirectories;
+    // we set this to cover $HOME + /tmp so Claude can stage in /tmp
+    // (skill-creator does this) and reach the user's other project
+    // directories without tripping the scope check.
+    additionalDirectories: [
+      process.env.HOME,
+      "/tmp",
+      "/private/tmp", // macOS resolves /tmp to /private/tmp in some contexts
+    ].filter(Boolean),
+    // `settingSources` controls which on-disk Claude settings the SDK
+    // loads (this is also where deny rules from .claude/settings.json
+    // would come from — those win even under bypassPermissions):
+    //   - ["project"] always loads ~/.slashpad/CLAUDE.md (seeded from
+    //     bundled-prompts/CLAUDE.md by Rust), which is how Slashpad's
+    //     system prompt is customized.
+    //   - ["user", "project"] additionally loads ~/.claude/ — the user's
+    //     personal CLAUDE.md, skills, and hooks — when the Settings
+    //     "Load user-level Claude settings & skills" checkbox is on.
     settingSources: payload.loadUserSettings ? ["user", "project"] : ["project"],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
+    // Belt-and-suspenders: the SDK's `bypassPermissions` +
+    // `allowDangerouslySkipPermissions` should be equivalent to the
+    // CLI's `--dangerously-skip-permissions`, but in practice some CLI
+    // versions still surface permission prompts under the SDK-level
+    // options alone. Force the hard bypass flag so the CLI really skips
+    // all permission checks for this session.
+    extraArgs: { "dangerously-skip-permissions": null },
     includePartialMessages: true,
   };
 
@@ -141,6 +225,7 @@ async function runTurn(userPrompt) {
   // with the complete parsed args once the block closes.
   const toolNames = new Map();   // index -> tool name
   const toolInputs = new Map();  // index -> accumulated JSON string
+  const toolIds = new Map();     // index -> tool_use_id (for linking tool_result events)
 
   try {
     for await (const message of query({ prompt: userPrompt, options })) {
@@ -169,7 +254,8 @@ async function runTurn(userPrompt) {
           if (cb.type === "tool_use") {
             toolNames.set(event.index, cb.name);
             toolInputs.set(event.index, "");
-            emit({ type: "tool_start", tool: cb.name, timestamp: Date.now() });
+            toolIds.set(event.index, cb.id);
+            emit({ type: "tool_start", tool: cb.name, toolUseId: cb.id, timestamp: Date.now() });
           }
         } else if (event.type === "content_block_delta") {
           const delta = event.delta;
@@ -185,9 +271,38 @@ async function runTurn(userPrompt) {
           if (name) {
             let args = {};
             try { args = JSON.parse(toolInputs.get(event.index) || "{}"); } catch {}
-            emit({ type: "tool_end", tool: name, args, timestamp: Date.now() });
+            const toolUseId = toolIds.get(event.index);
+            emit({ type: "tool_end", tool: name, toolUseId, args, timestamp: Date.now() });
             toolNames.delete(event.index);
             toolInputs.delete(event.index);
+            toolIds.delete(event.index);
+          }
+        }
+      } else if (message.type === "user") {
+        // Tool results come back as `user` messages with tool_result blocks
+        // (type: "tool_result", tool_use_id, content, is_error). Forward
+        // them so the UI can render errored tool calls distinctly instead
+        // of showing a misleading "✓" for blocked/failed operations.
+        const blocks = message.message?.content;
+        if (Array.isArray(blocks)) {
+          for (const block of blocks) {
+            if (block?.type !== "tool_result") continue;
+            let resultText = "";
+            if (typeof block.content === "string") {
+              resultText = block.content;
+            } else if (Array.isArray(block.content)) {
+              resultText = block.content
+                .filter((b) => b?.type === "text" && typeof b.text === "string")
+                .map((b) => b.text)
+                .join("\n");
+            }
+            emit({
+              type: "tool_result",
+              toolUseId: block.tool_use_id,
+              content: resultText,
+              isError: block.is_error === true,
+              timestamp: Date.now(),
+            });
           }
         }
       } else if ("result" in message) {

@@ -33,9 +33,14 @@ pub fn count_tools(msg: &ChatMessageView) -> (usize, usize, usize) {
     let mut files_changed = 0usize;
     for block in &msg.blocks {
         match block {
-            ContentBlock::ToolEnd { tool, .. } => {
+            ContentBlock::ToolEnd { tool, is_error, .. } => {
                 tool_call_count += 1;
-                if is_file_mutating(tool) {
+                if *is_error {
+                    error_count += 1;
+                } else if is_file_mutating(tool) {
+                    // Only count the file as changed if the tool didn't
+                    // error out — a blocked Write shouldn't inflate the
+                    // "files changed" summary.
                     files_changed += 1;
                 }
             }
@@ -275,7 +280,7 @@ fn summarize_args(tool: &str, args: &BTreeMap<String, serde_json::Value>) -> Str
 
 pub fn view_expanded(block: &ContentBlock) -> Element<'_, Message> {
     match block {
-        ContentBlock::ToolStart { tool, args } => {
+        ContentBlock::ToolStart { tool, args, .. } => {
             // Running state: spinner-like dot, muted tool name.
             let summary = summarize_args(tool, args);
 
@@ -296,15 +301,27 @@ pub fn view_expanded(block: &ContentBlock) -> Element<'_, Message> {
                 .padding(Padding::from([2.0, 0.0]).left(12.0))
                 .into()
         }
-        ContentBlock::ToolEnd { tool, args, result } => {
-            // Completed state: checkmark, bold tool name.
+        ContentBlock::ToolEnd {
+            tool,
+            args,
+            result,
+            is_error,
+            ..
+        } => {
+            // Errored tools get a red ✗ and a red tool name; successful ones
+            // keep the green ✓ + bold white name.
+            let (glyph, glyph_color, name_color) = if *is_error {
+                ("✗", super::theme::DANGER, super::theme::DANGER)
+            } else {
+                ("✓", super::theme::SUCCESS, super::theme::TEXT)
+            };
             let summary = summarize_args(tool, args);
 
             let mut r = row![
-                text("✓").size(12).color(super::theme::SUCCESS),
+                text(glyph).size(12).color(glyph_color),
                 text(tool.as_str())
                     .size(12)
-                    .color(super::theme::TEXT)
+                    .color(name_color)
                     .font(iced::Font {
                         weight: iced::font::Weight::Bold,
                         ..Default::default()
@@ -317,8 +334,19 @@ pub fn view_expanded(block: &ContentBlock) -> Element<'_, Message> {
                 r = r.push(text(summary).size(11).color(super::theme::MUTED));
             }
 
-            // For file-mutating tools, try to show diff counts from the result.
-            if is_file_mutating(tool) {
+            if *is_error {
+                // Surface the error text inline so users see *why* the tool
+                // failed (e.g. "permission denied", "file not found")
+                // instead of a mystery red ✗.
+                if let Some(res) = result {
+                    r = r.push(
+                        text(truncate(res, 160))
+                            .size(11)
+                            .color(super::theme::DANGER),
+                    );
+                }
+            } else if is_file_mutating(tool) {
+                // For file-mutating tools, try to show diff counts from the result.
                 if let Some(res) = result {
                     if let Some(diff) = parse_diff_counts(res) {
                         r = r.push(

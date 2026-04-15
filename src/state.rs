@@ -50,12 +50,19 @@ pub enum ContentBlock {
     },
     ToolStart {
         tool: String,
+        /// SDK tool_use id; used to match a later `ToolEnd`/`ToolResult`.
+        /// Optional for backwards compatibility with older sidecar events.
+        tool_use_id: Option<String>,
         args: BTreeMap<String, serde_json::Value>,
     },
     ToolEnd {
         tool: String,
+        tool_use_id: Option<String>,
         args: BTreeMap<String, serde_json::Value>,
         result: Option<String>,
+        /// Set by a `ToolResult` event with `is_error: true`. The UI renders
+        /// errored tool calls with a red ✗ instead of the green ✓.
+        is_error: bool,
     },
     Error(String),
 }
@@ -314,31 +321,101 @@ impl ChatState {
                     }
                 }
             }
-            SidecarEvent::ToolStart { tool, args, .. } => {
-                self.promote_to_streaming();
-                self.ensure_streaming_assistant();
-                let args = args.unwrap_or_default();
-                if let Some(msg) = self.current_assistant_mut() {
-                    msg.blocks.push(ContentBlock::ToolStart { tool, args });
-                }
-            }
-            SidecarEvent::ToolEnd {
-                tool, args, result, ..
+            SidecarEvent::ToolStart {
+                tool,
+                tool_use_id,
+                args,
+                ..
             } => {
                 self.promote_to_streaming();
                 self.ensure_streaming_assistant();
                 let args = args.unwrap_or_default();
                 if let Some(msg) = self.current_assistant_mut() {
-                    // Replace the matching ToolStart with this ToolEnd.
-                    let replaced = msg.blocks.iter_mut().rev().find(|b| {
-                        matches!(b, ContentBlock::ToolStart { tool: t, .. } if t == &tool)
+                    msg.blocks.push(ContentBlock::ToolStart {
+                        tool,
+                        tool_use_id,
+                        args,
+                    });
+                }
+            }
+            SidecarEvent::ToolEnd {
+                tool,
+                tool_use_id,
+                args,
+                result,
+                ..
+            } => {
+                self.promote_to_streaming();
+                self.ensure_streaming_assistant();
+                let args = args.unwrap_or_default();
+                if let Some(msg) = self.current_assistant_mut() {
+                    // Prefer matching by tool_use_id (unambiguous across
+                    // multiple concurrent tool calls of the same name);
+                    // fall back to tool-name match for older sidecar events
+                    // that don't carry an id.
+                    let replaced = msg.blocks.iter_mut().rev().find(|b| match b {
+                        ContentBlock::ToolStart {
+                            tool_use_id: id,
+                            tool: t,
+                            ..
+                        } => match (id, &tool_use_id) {
+                            (Some(a), Some(b)) => a == b,
+                            _ => t == &tool,
+                        },
+                        _ => false,
                     });
                     if let Some(slot) = replaced {
-                        *slot = ContentBlock::ToolEnd { tool, args, result };
+                        *slot = ContentBlock::ToolEnd {
+                            tool,
+                            tool_use_id,
+                            args,
+                            result,
+                            is_error: false,
+                        };
                     } else {
-                        msg.blocks
-                            .push(ContentBlock::ToolEnd { tool, args, result });
+                        msg.blocks.push(ContentBlock::ToolEnd {
+                            tool,
+                            tool_use_id,
+                            args,
+                            result,
+                            is_error: false,
+                        });
                     }
+                }
+            }
+            SidecarEvent::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } => {
+                // Find the ToolEnd this result belongs to and patch in the
+                // real result text + error flag. Walk messages newest-first
+                // — the match is almost always in the current assistant
+                // bubble, but in rare multi-turn patterns a late-arriving
+                // tool_result can land after Complete.
+                let patched = self
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .flat_map(|m| m.blocks.iter_mut())
+                    .find_map(|b| match b {
+                        ContentBlock::ToolEnd {
+                            tool_use_id: Some(id),
+                            ..
+                        } if id == &tool_use_id => Some(b),
+                        _ => None,
+                    });
+                if let Some(ContentBlock::ToolEnd {
+                    result,
+                    is_error: err_slot,
+                    ..
+                }) = patched
+                {
+                    if content.is_some() {
+                        *result = content;
+                    }
+                    *err_slot = is_error;
                 }
             }
             SidecarEvent::Error { error, .. } => {
