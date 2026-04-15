@@ -437,12 +437,6 @@ pub struct Slashpad {
     /// Input saved when the user opens the picker — restored on Esc so
     /// backing out of Cmd+P doesn't destroy whatever they were typing.
     pub input_before_picker: Option<String>,
-    /// One-shot flag: drop the next `InputChanged` after opening the
-    /// picker. `listen_with` observes Cmd+P but doesn't consume the
-    /// event, so iced's text_input also processes it and leaks a 'p'
-    /// into the input. Set true when entering the picker; cleared by
-    /// the `InputChanged` handler after it swallows the leaked char.
-    pub discard_next_input_change: bool,
 
     /// Position the user has dragged the palette window to. When `Some`,
     /// `show_palette()` skips the cursor-center `move_to` and lets the
@@ -461,12 +455,6 @@ pub struct Slashpad {
     /// mistaken for a user drag. Cleared by the first `WindowMoved`
     /// observed after arming.
     pub programmatic_move_pending: bool,
-    /// One-shot flag: strip exactly one trailing 'p'/'P' from the next
-    /// `InputChanged`. Set by `TogglePinPosition` because `listen_with`
-    /// observes Cmd+Shift+P without consuming it, so iced's text_input
-    /// still inserts the shifted letter. Unlike `discard_next_input_change`
-    /// this preserves the user's in-progress prompt instead of wiping it.
-    pub discard_next_pin_char: bool,
 }
 
 impl Slashpad {
@@ -554,11 +542,9 @@ impl Slashpad {
             filtered_projects: Vec::new(),
             selected_project_index: 0,
             input_before_picker: None,
-            discard_next_input_change: false,
             dragged_position: None,
             pinned_position: None,
             programmatic_move_pending: false,
-            discard_next_pin_char: false,
         };
 
         // Tray icon creation must happen on the main thread AFTER the
@@ -640,62 +626,21 @@ impl Slashpad {
                 Key::Named(Named::ArrowDown) => Some(Message::NavDown),
                 _ => None,
             }),
-            // Escape and Cmd+T both need listen_with (not on_key_press)
-            // because iced's text_input captures character keys and
-            // Escape when focused and returns Status::Captured — which
-            // hides them from on_key_press. listen_with receives events
-            // regardless of capture status, so we see the first press.
+            // Shortcut detection + window events. `listen_with` (not
+            // `on_key_press`) because iced's focused `text_input` returns
+            // `Status::Captured` for character keys and Escape — which
+            // hides them from `on_key_press`. `listen_with` sees events
+            // regardless of capture status, so we get the first press.
+            //
+            // All shortcut detection is centralized in
+            // `Slashpad::decode_shortcut`; leak prevention for modifier+
+            // letter chords is handled by `ui::shortcut_filter::ShortcutFilter`,
+            // which wraps the launcher `text_input` and drops matching
+            // `KeyPressed` events before the widget can insert the letter.
             iced::event::listen_with(|event, _status, window_id| match event {
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                    key,
-                    modifiers,
-                    ..
-                }) => {
-                    if matches!(key.as_ref(), Key::Named(Named::Enter)) {
-                        return if modifiers.command() {
-                            Some(Message::FireAndForgetSubmit)
-                        } else {
-                            Some(Message::Submit)
-                        };
-                    }
-                    if modifiers.command()
-                        && matches!(key.as_ref(), Key::Character("t"))
-                    {
-                        return Some(Message::OpenSessionInTerminal);
-                    }
-                    // Cmd+Shift+P toggles pinning the palette's dragged
-                    // position. Checked before plain Cmd+P so the
-                    // shifted chord doesn't fall through to the project
-                    // picker. iced delivers the shifted character as
-                    // "P" uppercase on most keymaps, but we accept
-                    // either casing in case a custom layout skips the
-                    // shift translation under Cmd.
-                    if modifiers.command()
-                        && modifiers.shift()
-                        && matches!(key.as_ref(), Key::Character("p") | Key::Character("P"))
-                    {
-                        return Some(Message::TogglePinPosition);
-                    }
-                    if modifiers.command()
-                        && matches!(key.as_ref(), Key::Character("p"))
-                    {
-                        return Some(Message::OpenProjectPicker);
-                    }
-                    if modifiers.command()
-                        && matches!(key.as_ref(), Key::Named(Named::Backspace))
-                    {
-                        return Some(Message::ClearLauncherInput { window_id });
-                    }
-                    if modifiers.control()
-                        && matches!(key.as_ref(), Key::Character("c"))
-                    {
-                        return Some(Message::CancelGeneration);
-                    }
-                    match key.as_ref() {
-                        Key::Named(Named::Escape) => Some(Message::EscapePressed),
-                        _ => None,
-                    }
-                }
+                    key, modifiers, ..
+                }) => Self::decode_shortcut(&key, modifiers, window_id),
                 iced::Event::Window(iced::window::Event::Unfocused) => {
                     Some(Message::WindowBlurred(window_id))
                 }
@@ -758,35 +703,90 @@ impl Slashpad {
         Subscription::batch(subs)
     }
 
+    /// Central keyboard shortcut decoder. Single source of truth for
+    /// every app-bound keypress. Pairs with
+    /// `should_filter_launcher_keypress` — adding a `Cmd`+letter arm
+    /// here automatically enables `ShortcutFilter` to drop the
+    /// corresponding event before the launcher `text_input` sees it
+    /// (otherwise iced's text_input would insert the letter and render
+    /// a one-frame flash before we could strip it).
+    fn decode_shortcut(
+        key: &iced::keyboard::Key,
+        modifiers: iced::keyboard::Modifiers,
+        window_id: iced::window::Id,
+    ) -> Option<Message> {
+        use iced::keyboard::key::Named;
+        use iced::keyboard::Key;
+
+        if matches!(key.as_ref(), Key::Named(Named::Enter)) {
+            return Some(if modifiers.command() {
+                Message::FireAndForgetSubmit
+            } else {
+                Message::Submit
+            });
+        }
+        if matches!(key.as_ref(), Key::Named(Named::Escape)) {
+            return Some(Message::EscapePressed);
+        }
+        if modifiers.command() && matches!(key.as_ref(), Key::Named(Named::Backspace)) {
+            return Some(Message::ClearLauncherInput { window_id });
+        }
+        if modifiers.control() && matches!(key.as_ref(), Key::Character("c")) {
+            return Some(Message::CancelGeneration);
+        }
+
+        // Cmd+letter shortcuts. `ShortcutFilter` prevents the letter
+        // from leaking into text_input; we don't need post-hoc stripping.
+        // Order matters: Cmd+Shift+P must be checked before plain Cmd+P
+        // since the shifted chord would otherwise fall through to the
+        // project picker.
+        if modifiers.command()
+            && modifiers.shift()
+            && matches!(key.as_ref(), Key::Character("p") | Key::Character("P"))
+        {
+            return Some(Message::TogglePinPosition);
+        }
+        if modifiers.command() && matches!(key.as_ref(), Key::Character("p")) {
+            return Some(Message::OpenProjectPicker);
+        }
+        if modifiers.command() && matches!(key.as_ref(), Key::Character("t")) {
+            return Some(Message::OpenSessionInTerminal);
+        }
+        None
+    }
+
+    /// Predicate used by `ui::shortcut_filter::ShortcutFilter` on the
+    /// launcher `text_input`: returns `true` when the keypress matches
+    /// a `Cmd`+letter shortcut that, if allowed through, would leak its
+    /// letter into the text buffer and render a one-frame flash.
+    ///
+    /// Derived from `decode_shortcut` so the filter stays in lockstep —
+    /// adding a new `Cmd`+letter arm there automatically activates
+    /// filtering here, with no separate registry to maintain.
+    ///
+    /// Returns `false` for unbound `Cmd`+letter combos (e.g. `Cmd+C`,
+    /// `Cmd+V`, `Cmd+X`, `Cmd+A`) so text_input's built-in clipboard
+    /// and select-all handling keeps working. Returns `false` for
+    /// non-character keys (Enter/Escape/Backspace/arrows), which
+    /// text_input never inserts regardless of modifier state.
+    pub fn should_filter_launcher_keypress(
+        key: &iced::keyboard::Key,
+        modifiers: iced::keyboard::Modifiers,
+    ) -> bool {
+        use iced::keyboard::Key;
+        if !modifiers.command() || !matches!(key.as_ref(), Key::Character(_)) {
+            return false;
+        }
+        Self::decode_shortcut(key, modifiers, iced::window::Id::unique()).is_some()
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::InputChanged(value) => {
-                // Swallow the stray 'P' from Cmd+Shift+P (toggle pin).
-                // Same leak mechanic as Cmd+P, but we preserve whatever
-                // the user was typing: only the trailing character gets
-                // stripped, not the whole field. If the incoming value
-                // doesn't end with 'p'/'P', treat it as a real keystroke
-                // (the listener's event was swallowed elsewhere) and fall
-                // through to normal processing.
-                if self.discard_next_pin_char {
-                    self.discard_next_pin_char = false;
-                    if value.ends_with('p') || value.ends_with('P') {
-                        let mut trimmed = value.clone();
-                        trimmed.pop();
-                        self.input = trimmed;
-                        return Task::none();
-                    }
-                }
-                // Swallow the stray 'p' from Cmd+P: the global
-                // listen_with observes the keypress but doesn't
-                // consume it, so iced's text_input also inserts it.
-                // Drop exactly one InputChanged — anything the user
-                // types after this behaves normally.
-                if self.discard_next_input_change {
-                    self.discard_next_input_change = false;
-                    self.input.clear();
-                    return Task::none();
-                }
+                // `ShortcutFilter` (wrapping the launcher text_input)
+                // drops modifier+letter shortcuts before text_input can
+                // insert the letter, so there's no leaked character to
+                // strip here — InputChanged reflects real user typing.
                 self.input = value.clone();
 
                 // Skill filtering
@@ -1118,7 +1118,8 @@ impl Slashpad {
                 self.filtered_projects = self.all_projects.clone();
                 self.selected_project_index = 0;
                 self.mode = Mode::ProjectPicker;
-                self.discard_next_input_change = true;
+                // `ShortcutFilter` drops the Cmd+P event before
+                // text_input can insert the 'p' — no leak to clean up.
                 text_input::focus(INPUT_ID.clone())
             }
 
@@ -1240,11 +1241,6 @@ impl Slashpad {
             }
 
             Message::TogglePinPosition => {
-                // text_input receives the shifted-P press too; eat the
-                // trailing character from the next InputChanged so it
-                // doesn't land in whatever prompt the user was typing.
-                self.discard_next_pin_char = true;
-
                 if self.pinned_position.is_some() {
                     // Unpin → full reset to the default cursor-centered
                     // behavior. Clear both stored positions and actively
@@ -1445,10 +1441,9 @@ impl Slashpad {
             }
 
             Message::OpenSessionInTerminal => {
-                // Swallow the stray 't' leaked by listen_with (same
-                // pattern as Cmd+P / OpenProjectPicker).
-                self.discard_next_input_change = true;
-
+                // `ShortcutFilter` drops the Cmd+T event before
+                // text_input can insert the 't' — no leak to clean up.
+                //
                 // Only meaningful from the chat view. Fire in Idle /
                 // Skills / Settings is a silent no-op so the shortcut
                 // feels dead outside its scope rather than doing

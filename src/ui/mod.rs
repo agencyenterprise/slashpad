@@ -4,6 +4,7 @@ pub mod idle_list;
 pub mod keyhints;
 pub mod project_picker;
 pub mod settings;
+pub mod shortcut_filter;
 pub mod skill_list;
 pub mod theme;
 pub mod tool_line;

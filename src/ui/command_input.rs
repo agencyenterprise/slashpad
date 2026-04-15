@@ -3,8 +3,9 @@
 use iced::widget::{container, text_input};
 use iced::{Element, Length};
 
-use crate::app::{Message, INPUT_ID};
+use crate::app::{Message, Slashpad, INPUT_ID};
 use crate::state::Mode;
+use crate::ui::shortcut_filter::ShortcutFilter;
 
 pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Message> {
     let placeholder = match mode {
@@ -35,6 +36,14 @@ pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Messag
                 ..super::theme::ACCENT
             },
         });
+
+    // Drop only the modifier+letter events that map to app shortcuts,
+    // so the shortcut's letter never gets inserted into text_input's
+    // internal buffer (which otherwise produces a one-frame visible
+    // flash before our update handler can strip the leaked char).
+    // Unbound Cmd+letter combos (Cmd+C/V/X/A) are allowed through so
+    // clipboard and select-all keep working.
+    let input = ShortcutFilter::new(input, Slashpad::should_filter_launcher_keypress);
 
     container(input)
         .padding(12)
