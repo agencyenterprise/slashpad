@@ -18,7 +18,7 @@ Then press **Ctrl+Space** to open the palette. You can change the hotkey in Sett
 ## Updating
 
 ```bash
-brew upgrade slashpad
+brew update && brew upgrade slashpad
 brew services restart slashpad
 ```
 
