@@ -28,15 +28,7 @@ pub fn view<'a>(
     .align_y(iced::Alignment::Center);
 
     match update_status {
-        UpdateStatus::Idle => {}
-        UpdateStatus::Checking => {
-            title = title.push(
-                text("  Checking for updates...")
-                    .size(11)
-                    .color(super::theme::MUTED),
-            );
-        }
-        UpdateStatus::UpToDate => {
+        UpdateStatus::Idle | UpdateStatus::Checking | UpdateStatus::UpToDate => {
             title = title.push(
                 text("  Latest version")
                     .size(11)
