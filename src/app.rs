@@ -160,6 +160,8 @@ pub enum External {
         chat_id: ChatId,
         messages: Vec<ChatMessageView>,
     },
+    /// Update check completed. `Some(version)` if newer, `None` if current.
+    UpdateAvailable(Option<String>),
     /// Left-click on the menu-bar tray icon — opens the settings window
     /// anchored below the tray icon. Coordinates are logical pixels in
     /// winit's top-left-origin system rooted at the primary monitor.
@@ -345,6 +347,13 @@ pub enum Message {
         window_id: iced::window::Id,
         position: iced::Point,
     },
+    /// Background update check completed. `Some(version)` if newer,
+    /// `None` if already on the latest.
+    UpdateAvailable(Option<String>),
+    /// User clicked "Upgrade to vX.Y.Z" — runs `brew upgrade slashpad`.
+    UpgradeClicked,
+    /// The background `brew upgrade` finished (success or failure).
+    UpgradeFinished(Result<(), String>),
 }
 
 /// Root application state.
@@ -456,6 +465,25 @@ pub struct Slashpad {
     /// mistaken for a user drag. Cleared by the first `WindowMoved`
     /// observed after arming.
     pub programmatic_move_pending: bool,
+
+    /// Update check / upgrade lifecycle state. Driven by the settings
+    /// title row — checked on each settings-window open.
+    pub update_status: UpdateStatus,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum UpdateStatus {
+    /// No check performed yet (or settings haven't been opened).
+    #[default]
+    Idle,
+    /// GitHub API request in flight.
+    Checking,
+    /// Running version is the latest.
+    UpToDate,
+    /// A newer version exists.
+    Available(String),
+    /// `brew update && brew upgrade slashpad` in progress.
+    Upgrading,
 }
 
 impl Slashpad {
@@ -546,6 +574,7 @@ impl Slashpad {
             dragged_position: None,
             pinned: None,
             programmatic_move_pending: false,
+            update_status: UpdateStatus::Idle,
         };
 
         // Tray icon creation must happen on the main thread AFTER the
@@ -1112,6 +1141,68 @@ impl Slashpad {
                 Task::none()
             }
 
+            Message::UpdateAvailable(version) => {
+                // `None` means the running version is already the latest.
+                self.update_status = match version {
+                    Some(v) => UpdateStatus::Available(v),
+                    None => UpdateStatus::UpToDate,
+                };
+                Task::none()
+            }
+
+            Message::UpgradeClicked => {
+                if matches!(self.update_status, UpdateStatus::Upgrading) {
+                    return Task::none();
+                }
+                self.update_status = UpdateStatus::Upgrading;
+                Task::perform(
+                    async {
+                        // Fetch the latest formulae so brew knows about
+                        // the new release.
+                        let update = tokio::process::Command::new("brew")
+                            .arg("update")
+                            .output()
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        if !update.status.success() {
+                            return Err(String::from_utf8_lossy(&update.stderr).to_string());
+                        }
+
+                        let upgrade = tokio::process::Command::new("brew")
+                            .args(["upgrade", "slashpad"])
+                            .output()
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        if !upgrade.status.success() {
+                            return Err(String::from_utf8_lossy(&upgrade.stderr).to_string());
+                        }
+
+                        Ok(())
+                    },
+                    Message::UpgradeFinished,
+                )
+            }
+
+            Message::UpgradeFinished(result) => {
+                match result {
+                    Ok(()) => {
+                        // The new binary is installed. Restart via brew
+                        // services so the updated version takes over.
+                        self.chats.clear();
+                        let _ = std::process::Command::new("brew")
+                            .args(["services", "restart", "slashpad"])
+                            .spawn();
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("[slashpad] brew upgrade failed: {e}");
+                        // Fall back to showing the update button again.
+                        self.update_status = UpdateStatus::Idle;
+                    }
+                }
+                Task::none()
+            }
+
             Message::OpenProjectPicker => {
                 // Settings window open → skip; ProjectPicker already
                 // open → no-op (don't reset selection/input on a
@@ -1574,6 +1665,7 @@ impl Slashpad {
                 self.hotkey_error.as_deref(),
                 self.settings.preferred_terminal,
                 self.settings.load_user_settings,
+                &self.update_status,
             ))
             .padding(8)
             .width(iced::Length::Fill)
@@ -2497,6 +2589,14 @@ impl Slashpad {
             return iced::window::close(id);
         }
 
+        // Kick off an update check every time settings opens.
+        self.update_status = UpdateStatus::Checking;
+        let tx = external_sender();
+        tokio::spawn(async move {
+            let result = crate::updates::check_for_update().await;
+            let _ = tx.send(External::UpdateAvailable(result));
+        });
+
         // Each fresh open starts masked and re-synced with whatever is
         // actually stored in the keychain (covers the case where the
         // user saved, closed, and came back — we want the saved key
@@ -2566,6 +2666,7 @@ fn external_subscription_stream() -> impl Stream<Item = Message> {
                     tray_w,
                     tray_h,
                 },
+                External::UpdateAvailable(v) => Message::UpdateAvailable(v),
                 External::TrayMenuShow => Message::HotkeyPressed,
                 External::TrayMenuQuit => Message::QuitRequested,
             };

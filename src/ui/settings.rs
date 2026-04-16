@@ -3,7 +3,7 @@
 use iced::widget::{button, checkbox, column, container, pick_list, row, text, text_input, Column};
 use iced::{Element, Length};
 
-use crate::app::Message;
+use crate::app::{Message, UpdateStatus};
 use crate::settings::PreferredTerminal;
 
 #[allow(clippy::too_many_arguments)]
@@ -16,13 +16,66 @@ pub fn view<'a>(
     hotkey_error: Option<&'a str>,
     preferred_terminal: PreferredTerminal,
     load_user_settings: bool,
+    update_status: &UpdateStatus,
 ) -> Element<'a, Message> {
-    let title = row![
+    let mut title = row![
         text("/slashpad").size(15).color(super::theme::ACCENT),
         text(format!("  v{}", env!("CARGO_PKG_VERSION")))
             .size(11)
             .color(super::theme::MUTED),
-        iced::widget::horizontal_space(),
+    ]
+    .spacing(0)
+    .align_y(iced::Alignment::Center);
+
+    match update_status {
+        UpdateStatus::Idle => {}
+        UpdateStatus::Checking => {
+            title = title.push(
+                text("  Checking for updates...")
+                    .size(11)
+                    .color(super::theme::MUTED),
+            );
+        }
+        UpdateStatus::UpToDate => {
+            title = title.push(
+                text("  Latest version")
+                    .size(11)
+                    .color(super::theme::MUTED),
+            );
+        }
+        UpdateStatus::Available(version) => {
+            title = title.push(
+                button(
+                    text(format!("  Upgrade to v{version}"))
+                        .size(11)
+                        .color(super::theme::ACCENT),
+                )
+                .on_press(Message::UpgradeClicked)
+                .padding(0)
+                .style(|_, status| {
+                    let text_color = match status {
+                        iced::widget::button::Status::Hovered => super::theme::TEXT,
+                        _ => super::theme::ACCENT,
+                    };
+                    iced::widget::button::Style {
+                        background: None,
+                        text_color,
+                        ..Default::default()
+                    }
+                }),
+            );
+        }
+        UpdateStatus::Upgrading => {
+            title = title.push(
+                text("  Upgrading...")
+                    .size(11)
+                    .color(super::theme::MUTED),
+            );
+        }
+    }
+
+    title = title.push(iced::widget::horizontal_space());
+    title = title.push(
         button(text("esc").size(11).color(super::theme::MUTED))
             .on_press(Message::CloseSettings)
             .padding(0)
@@ -31,8 +84,7 @@ pub fn view<'a>(
                 text_color: super::theme::MUTED,
                 ..Default::default()
             }),
-    ]
-    .align_y(iced::Alignment::Center);
+    );
 
     // Inner text_input: transparent so it adopts the surrounding
     // container's background, themed to match the rest of the app.

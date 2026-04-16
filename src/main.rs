@@ -14,6 +14,7 @@ mod state;
 mod terminal;
 mod tray;
 mod ui;
+mod updates;
 
 use app::Slashpad;
 
