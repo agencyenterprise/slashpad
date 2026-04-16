@@ -61,6 +61,14 @@ fn display_project_path(path: &std::path::Path) -> String {
 
 /// Pin the chat scrollable to the bottom. Runs against the *next* laid-out
 /// frame, so it sees freshly appended content and lands at y=content_end.
+/// Resolve the full path to `brew`. Needed because launchd services
+/// don't inherit the user's shell PATH.
+fn find_brew() -> Option<&'static str> {
+    ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+}
+
 fn snap_chat_to_bottom() -> Task<Message> {
     scrollable::snap_to(
         CHAT_SCROLL_ID.clone(),
@@ -1157,9 +1165,13 @@ impl Slashpad {
                 self.update_status = UpdateStatus::Upgrading;
                 Task::perform(
                     async {
+                        let brew = find_brew().ok_or_else(|| {
+                            "brew not found — install Homebrew or upgrade manually".to_string()
+                        })?;
+
                         // Fetch the latest formulae so brew knows about
                         // the new release.
-                        let update = tokio::process::Command::new("brew")
+                        let update = tokio::process::Command::new(brew)
                             .arg("update")
                             .output()
                             .await
@@ -1168,7 +1180,7 @@ impl Slashpad {
                             return Err(String::from_utf8_lossy(&update.stderr).to_string());
                         }
 
-                        let upgrade = tokio::process::Command::new("brew")
+                        let upgrade = tokio::process::Command::new(brew)
                             .args(["upgrade", "slashpad"])
                             .output()
                             .await
@@ -1189,9 +1201,11 @@ impl Slashpad {
                         // The new binary is installed. Restart via brew
                         // services so the updated version takes over.
                         self.chats.clear();
-                        let _ = std::process::Command::new("brew")
-                            .args(["services", "restart", "slashpad"])
-                            .spawn();
+                        if let Some(brew) = find_brew() {
+                            let _ = std::process::Command::new(brew)
+                                .args(["services", "restart", "slashpad"])
+                                .spawn();
+                        }
                         std::process::exit(0);
                     }
                     Err(e) => {
