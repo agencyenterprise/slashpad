@@ -6,6 +6,39 @@ use std::path::Path;
 use crate::sidecar::{self, FollowUp, Payload, SidecarEvent};
 use crate::state::{ChatMessageView, ContentBlock, MessageStatus, Role, SessionInfo};
 
+/// Collapse the Claude Agent SDK's slash-command envelope back to the
+/// human form the user originally typed. The SDK expands any prompt
+/// starting with `/` into three newline-separated tags
+/// (`<command-message>`, `<command-name>`, `<command-args>`) before
+/// writing it to the session JSONL, so resumed chats see the XML
+/// verbatim. New chats don't hit this because we render user bubbles
+/// from the raw input in `ChatState` — this only touches the
+/// `messages` load path. If the envelope isn't present, leave the text
+/// alone.
+fn unwrap_slash_command(content: &str) -> String {
+    let trimmed = content.trim();
+    let name = extract_tag(trimmed, "command-name");
+    let args = extract_tag(trimmed, "command-args");
+    match (name, args) {
+        (Some(n), Some(a)) if !n.is_empty() => {
+            if a.is_empty() {
+                n
+            } else {
+                format!("{n} {a}")
+            }
+        }
+        _ => content.to_string(),
+    }
+}
+
+fn extract_tag(s: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = s.find(&open)? + open.len();
+    let end = s[start..].find(&close)? + start;
+    Some(s[start..end].trim().to_string())
+}
+
 /// Spawn `runner.mjs list` against `cwd` and collect recent sessions.
 /// Sessions are scoped per-`cwd` because that's what the Claude Code
 /// CLI uses to key its `~/.claude/projects/` subdirectories; passing
@@ -154,7 +187,12 @@ pub async fn load_messages(cwd: &Path, session_id: &str) -> anyhow::Result<Vec<C
                 }
                 if let Some(text) = content.as_ref() {
                     if !text.is_empty() {
-                        blocks.push(ContentBlock::text(text.clone()));
+                        let cleaned = if role == Role::User {
+                            unwrap_slash_command(text)
+                        } else {
+                            text.clone()
+                        };
+                        blocks.push(ContentBlock::text(cleaned));
                     }
                 }
 
