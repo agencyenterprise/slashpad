@@ -1489,6 +1489,30 @@ impl Slashpad {
                 // children. Bypasses iced's graceful shutdown because
                 // that path is fiddly with our NSPanel wrapping.
                 self.chats.clear();
+
+                // Unload the launchctl service so `brew services start`
+                // works again without hitting "Bootstrap failed: 5".
+                // Only runs when managed by brew services (plist exists).
+                if let Some(home) = std::env::var_os("HOME") {
+                    let plist = std::path::Path::new(&home)
+                        .join("Library/LaunchAgents/homebrew.mxcl.slashpad.plist");
+                    if plist.exists() {
+                        let uid = std::process::Command::new("id")
+                            .arg("-u")
+                            .output()
+                            .ok()
+                            .and_then(|o| String::from_utf8(o.stdout).ok())
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string();
+                        if !uid.is_empty() {
+                            let _ = std::process::Command::new("/bin/launchctl")
+                                .args(["bootout", &format!("gui/{uid}"), &plist.to_string_lossy()])
+                                .status();
+                        }
+                    }
+                }
+
                 std::process::exit(0)
             }
 
