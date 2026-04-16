@@ -97,8 +97,16 @@ cp "$REPO_ROOT/agent/runner.mjs" "$APP_DIR/Contents/Resources/agent/runner.mjs"
 cp "$REPO_ROOT/package.json" "$APP_DIR/Contents/Resources/package.json"
 echo "    Copied sidecar files"
 
-# Install production dependencies using the bundled bun.
-(cd "$APP_DIR/Contents/Resources" && "$APP_DIR/Contents/Resources/bin/bun" install --production 2>&1 | tail -1)
+# Install production dependencies. Use host bun/node for `install` since
+# the bundled bun may be cross-compiled (node_modules are arch-independent).
+if command -v bun >/dev/null 2>&1; then
+    (cd "$APP_DIR/Contents/Resources" && bun install --production 2>&1 | tail -1)
+elif command -v npm >/dev/null 2>&1; then
+    (cd "$APP_DIR/Contents/Resources" && npm install --production 2>&1 | tail -1)
+else
+    # Last resort: try the bundled bun (only works if same arch as host).
+    (cd "$APP_DIR/Contents/Resources" && "$APP_DIR/Contents/Resources/bin/bun" install --production 2>&1 | tail -1)
+fi
 echo "    Installed node_modules"
 
 # ── 6. Zip for upload ────────────────────────────────────────────
