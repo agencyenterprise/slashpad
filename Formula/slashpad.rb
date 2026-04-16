@@ -1,8 +1,8 @@
 class Slashpad < Formula
   desc "Desktop AI command palette powered by Claude"
   homepage "https://github.com/agencyenterprise/slashpad"
-  url "https://github.com/agencyenterprise/slashpad/archive/refs/tags/v0.1.12.tar.gz"
-  sha256 "1e076b665c7157d0f0c2c5ceb1698f28629899ef62ff100817a0c791e4638d3a"
+  url "https://github.com/agencyenterprise/slashpad/archive/refs/tags/v0.1.13.tar.gz"
+  sha256 "5cfb936f9ad620fb1331fa48d6d4583afe3c53e2461b473047ad14e64ad2d07c"
   license "MIT"
 
   # To update: change BUN_VERSION, then run:
@@ -24,11 +24,11 @@ class Slashpad < Formula
 
   resource "slashpad-binary" do
     if Hardware::CPU.arm?
-      url "https://github.com/agencyenterprise/slashpad/releases/download/v0.1.12/slashpad-darwin-aarch64"
-      sha256 "bd4a24f36fa5032332ab5d36a06916403264f89313d6378ce73a823c13f4ad03"
+      url "https://github.com/agencyenterprise/slashpad/releases/download/v0.1.13/slashpad-darwin-aarch64"
+      sha256 "dc8e8203904d020881252043b57f338330a1c7fe6735288f0749a3bb601f014c"
     else
-      url "https://github.com/agencyenterprise/slashpad/releases/download/v0.1.12/slashpad-darwin-x86_64"
-      sha256 "7136389ac31af2a29d59ea98e686188f208457acf5c9e3939cacf390a6758249"
+      url "https://github.com/agencyenterprise/slashpad/releases/download/v0.1.13/slashpad-darwin-x86_64"
+      sha256 "ad7861dab14b2dee431c4e6bdf6acb4f4e00578d154b08e78ba68e2eace23894"
     end
   end
 
