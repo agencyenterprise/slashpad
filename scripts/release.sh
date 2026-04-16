@@ -29,20 +29,19 @@ if $IS_PRERELEASE; then
     echo "    (prerelease — Homebrew tap will NOT be updated)"
 fi
 
-# ── 1. Create GitHub release (also creates + pushes the tag) ──────
+# ── 1. Create GitHub release as prerelease (also creates + pushes the tag)
+# All releases start as prereleases so the update checker doesn't see
+# them until the Homebrew formula and binaries are fully ready. Stable
+# releases get promoted at the very end.
 if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
     echo "    Release ${TAG} already exists, skipping"
 else
-    RELEASE_FLAGS=(
-        --repo "$REPO"
-        --title "Slashpad ${TAG}"
-        --generate-notes
-    )
-    if $IS_PRERELEASE; then
-        RELEASE_FLAGS+=(--prerelease)
-    fi
-    gh release create "$TAG" "${RELEASE_FLAGS[@]}"
-    echo "    Created release ${TAG}"
+    gh release create "$TAG" \
+        --repo "$REPO" \
+        --title "Slashpad ${TAG}" \
+        --generate-notes \
+        --prerelease
+    echo "    Created prerelease ${TAG}"
 fi
 
 # ── 2. Wait for the source tarball ────────────────────────────────
@@ -119,6 +118,14 @@ else
         echo "    Pushed formula to ${TAP_REPO}"
     fi
     cd - >/dev/null
+
+    # ── 7. Promote to full release ────────────────────────────────
+    # Now that the Homebrew tap is updated, promote the release so the
+    # in-app update checker (which ignores prereleases for stable builds)
+    # can see it.
+    echo "==> Promoting ${TAG} to full release..."
+    gh release edit "$TAG" --repo "$REPO" --prerelease=false
+    echo "    Done"
 fi
 
 echo ""
