@@ -2497,6 +2497,12 @@ impl Slashpad {
 
     fn show_palette(&mut self) -> Task<Message> {
         self.palette_visible = true;
+
+        // Re-scan the skills directory every time the palette is shown so
+        // newly created skills appear without restarting the app.
+        self.all_skills =
+            skills::load_skills(self.settings.load_user_settings).unwrap_or_default();
+
         // If the user has pinned a chat (Cmd+Shift+P while viewing one)
         // and that chat is still alive, re-enter it directly. Otherwise
         // fall through to the default "open into Skills with `/`
