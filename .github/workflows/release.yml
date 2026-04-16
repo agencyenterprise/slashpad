@@ -9,11 +9,11 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: macos-14
+          - target: aarch64-apple-darwin
             arch: aarch64
-          - runner: macos-13
+          - target: x86_64-apple-darwin
             arch: x86_64
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-14
     permissions:
       contents: write
     steps:
@@ -21,14 +21,16 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Upload binary to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp target/release/slashpad slashpad-darwin-${{ matrix.arch }}
+          cp target/${{ matrix.target }}/release/slashpad slashpad-darwin-${{ matrix.arch }}
           gh release upload "${{ github.event.release.tag_name }}" \
-            slashpad-darwin-${{ matrix.arch }}
+            slashpad-darwin-${{ matrix.arch }} --clobber
