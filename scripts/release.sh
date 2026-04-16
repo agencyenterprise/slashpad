@@ -73,7 +73,9 @@ echo "    x86_64  sha256: ${X86_64_SHA}"
 sed -i '' "4s|url \".*\"|url \"${TARBALL_URL}\"|" Formula/slashpad.rb
 sed -i '' "5s|sha256 \".*\"|sha256 \"${TARBALL_SHA}\"|" Formula/slashpad.rb
 
-# Binary resource SHAs — match the line after each binary URL
+# Binary resource URLs + SHAs
+sed -i '' "s|releases/download/v[^/]*/slashpad-darwin-aarch64|releases/download/${TAG}/slashpad-darwin-aarch64|" Formula/slashpad.rb
+sed -i '' "s|releases/download/v[^/]*/slashpad-darwin-x86_64|releases/download/${TAG}/slashpad-darwin-x86_64|" Formula/slashpad.rb
 sed -i '' "/slashpad-darwin-aarch64/{n;s|sha256 \".*\"|sha256 \"${AARCH64_SHA}\"|;}" Formula/slashpad.rb
 sed -i '' "/slashpad-darwin-x86_64/{n;s|sha256 \".*\"|sha256 \"${X86_64_SHA}\"|;}" Formula/slashpad.rb
 
