@@ -1,4 +1,4 @@
-import { query, listSessions, getSessionMessages, renameSession, tagSession } from "@anthropic-ai/claude-agent-sdk";
+import { query, listSessions, getSessionMessages, tagSession } from "@anthropic-ai/claude-agent-sdk";
 import { createInterface } from "readline";
 import { existsSync } from "fs";
 
@@ -224,9 +224,7 @@ async function runTurn(userPrompt) {
 
         if (isFirstTurn && !payload.resume) {
           const dir = cwd || process.env.HOME;
-          const title = userPrompt.length > 80 ? userPrompt.slice(0, 77) + "..." : userPrompt;
           tagSession(sessionId, "slashpad", { dir }).catch(() => {});
-          renameSession(sessionId, title, { dir }).catch(() => {});
           isFirstTurn = false;
         }
       }
