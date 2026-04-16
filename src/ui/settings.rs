@@ -17,8 +17,11 @@ pub fn view<'a>(
     preferred_terminal: PreferredTerminal,
     load_user_settings: bool,
 ) -> Element<'a, Message> {
-    let header = row![
-        text("Settings").size(13).color(super::theme::TEXT),
+    let title = row![
+        text("/slashpad").size(15).color(super::theme::ACCENT),
+        text(format!("  v{}", env!("CARGO_PKG_VERSION")))
+            .size(11)
+            .color(super::theme::MUTED),
         iced::widget::horizontal_space(),
         button(text("esc").size(11).color(super::theme::MUTED))
             .on_press(Message::CloseSettings)
@@ -309,7 +312,7 @@ pub fn view<'a>(
     .spacing(8);
 
     let body = column![
-        header,
+        title,
         api_row,
         hotkey_row,
         terminal_row,
