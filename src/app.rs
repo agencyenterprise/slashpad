@@ -1198,10 +1198,16 @@ impl Slashpad {
             Message::UpgradeFinished(result) => {
                 match result {
                     Ok(()) => {
-                        // The new binary is installed. Exit with a non-zero
-                        // code so launchd's `keep_alive crashed: true`
-                        // restarts us with the upgraded binary.
+                        // The new binary is installed. Re-exec ourselves —
+                        // after `brew upgrade` the symlink at current_exe()
+                        // points to the new binary. This works whether
+                        // launchd is managing us or not.
                         self.chats.clear();
+                        let exe = std::env::current_exe().unwrap_or_default();
+                        use std::os::unix::process::CommandExt;
+                        let err = std::process::Command::new(&exe).exec();
+                        // exec() only returns on error.
+                        eprintln!("[slashpad] re-exec failed: {err}");
                         std::process::exit(1);
                     }
                     Err(e) => {
