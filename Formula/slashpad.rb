@@ -41,7 +41,7 @@ class Slashpad < Formula
 
   service do
     run opt_bin/"slashpad"
-    keep_alive true
+    keep_alive crashed: true
     log_path var/"log/slashpad.log"
     error_log_path var/"log/slashpad.log"
   end
