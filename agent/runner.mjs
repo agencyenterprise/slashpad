@@ -169,26 +169,19 @@ async function runTurn(userPrompt) {
     // The Agent SDK evaluates a tool call in this order (see
     // https://code.claude.com/en/agent-sdk/permissions):
     //   1. Hooks
-    //   2. Deny rules (disallowedTools + settings.json deny) — ALWAYS win,
-    //      even under bypassPermissions
-    //   3. Permission mode — bypassPermissions approves everything here
+    //   2. Deny rules (disallowedTools + settings.json deny)
+    //   3. Permission mode — "auto" uses a model classifier to
+    //      approve or deny each tool call
     //   4. Allow rules (allowedTools + settings.json allow)
     //   5. canUseTool callback
     //
-    // We run in bypassPermissions, so step 3 approves every tool that
-    // isn't denied in step 2. That means:
-    //   - `allowedTools` would be redundant here (docs are explicit:
-    //     "Setting allowed_tools=['Read'] alongside bypassPermissions
-    //     still approves every tool"). Not set.
-    //   - `disallowedTools` is the only thing that actually blocks tools
-    //     in bypass mode. EnterPlanMode / ExitPlanMode / AskUserQuestion
-    //     don't belong in a one-shot command palette.
+    // We use "auto" mode so the model classifier handles approvals
+    // without blanket bypass. disallowedTools still blocks tools
+    // that don't belong in a command palette.
     disallowedTools: ["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"],
-    // Widen the filesystem scope beyond cwd. The docs note (for
-    // acceptEdits) that scope is gated on cwd + additionalDirectories;
-    // we set this to cover $HOME + /tmp so Claude can stage in /tmp
-    // (skill-creator does this) and reach the user's other project
-    // directories without tripping the scope check.
+    // Widen the filesystem scope beyond cwd so Claude can stage in
+    // /tmp (skill-creator does this) and reach the user's other
+    // project directories without tripping the scope check.
     additionalDirectories: [
       process.env.HOME,
       "/tmp",
@@ -196,7 +189,7 @@ async function runTurn(userPrompt) {
     ].filter(Boolean),
     // `settingSources` controls which on-disk Claude settings the SDK
     // loads (this is also where deny rules from .claude/settings.json
-    // would come from — those win even under bypassPermissions):
+    // would come from):
     //   - ["project"] always loads ~/.slashpad/CLAUDE.md (seeded from
     //     bundled-prompts/CLAUDE.md by Rust), which is how Slashpad's
     //     system prompt is customized.
@@ -204,13 +197,7 @@ async function runTurn(userPrompt) {
     //     personal CLAUDE.md, skills, and hooks — when the Settings
     //     "Load user-level Claude settings & skills" checkbox is on.
     settingSources: payload.loadUserSettings ? ["user", "project"] : ["project"],
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
-    // Workaround for claude-code#36168: bypassPermissions is broken in
-    // CLI versions after v2.1.77. The canUseTool callback catches any
-    // permission request that escapes step 3 (permission mode) and
-    // reaches step 5 in the SDK's evaluation chain.
-    canUseTool: async (_tool, input) => ({ behavior: "allow", updatedInput: input }),
+    permissionMode: "auto",
     includePartialMessages: true,
   };
 
