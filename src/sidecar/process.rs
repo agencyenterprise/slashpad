@@ -38,12 +38,16 @@ pub fn runner_path() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    // 2. Relative to the binary — Homebrew installs the binary into
-    //    <prefix>/bin/slashpad and the sidecar into <prefix>/libexec/agent/,
-    //    so ../libexec/agent/runner.mjs resolves correctly.
+    // 2. Relative to the binary — check both .app bundle and Homebrew layouts.
     if let Ok(exe) = std::env::current_exe() {
         if let Ok(canonical) = exe.canonicalize() {
             if let Some(exe_dir) = canonical.parent() {
+                // .app bundle: Contents/MacOS/slashpad → Contents/Resources/agent/runner.mjs
+                let bundle_path = exe_dir.join("../Resources/agent/runner.mjs");
+                if bundle_path.exists() {
+                    return bundle_path;
+                }
+                // Homebrew: <prefix>/bin/slashpad → <prefix>/libexec/agent/runner.mjs
                 let libexec_path = exe_dir.join("../libexec/agent/runner.mjs");
                 if libexec_path.exists() {
                     return libexec_path;
@@ -72,6 +76,12 @@ fn runtime_path() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Ok(canonical) = exe.canonicalize() {
             if let Some(exe_dir) = canonical.parent() {
+                // .app bundle: Contents/MacOS/slashpad → Contents/Resources/bin/bun
+                let bundle_bun = exe_dir.join("../Resources/bin/bun");
+                if bundle_bun.exists() {
+                    return bundle_bun;
+                }
+                // Homebrew: <prefix>/bin/slashpad → <prefix>/libexec/bin/bun
                 let bundled = exe_dir.join("../libexec/bin/bun");
                 if bundled.exists() {
                     return bundled;

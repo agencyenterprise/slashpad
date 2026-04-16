@@ -148,6 +148,10 @@ pub struct AppSettings {
     /// no longer exists on disk is ignored at load time.
     #[serde(default, rename = "selectedProjectPath")]
     pub selected_project_path: Option<String>,
+    /// When true, Slashpad launches automatically at login. Only
+    /// applicable to `.app` installs (Homebrew uses `brew services`).
+    #[serde(default, rename = "launchAtLogin")]
+    pub launch_at_login: bool,
 }
 
 fn default_hotkey() -> String {
@@ -166,6 +170,7 @@ impl Default for AppSettings {
             preferred_terminal: PreferredTerminal::default(),
             load_user_settings: false,
             selected_project_path: None,
+            launch_at_login: false,
         }
     }
 }

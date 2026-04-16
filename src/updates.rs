@@ -1,19 +1,35 @@
 //! Check GitHub for newer Slashpad releases.
 
 use serde::Deserialize;
+use std::path::PathBuf;
 
 /// Minimal subset of the GitHub releases API response.
 #[derive(Deserialize)]
 struct GitHubRelease {
     tag_name: String,
     prerelease: bool,
+    assets: Vec<ReleaseAsset>,
+}
+
+#[derive(Deserialize)]
+struct ReleaseAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+/// Information about an available update.
+#[derive(Debug, Clone)]
+pub struct UpdateInfo {
+    pub version: String,
+    /// URL to download the .app zip for the current architecture, if available.
+    pub download_url: Option<String>,
 }
 
 /// The current compiled-in version (from Cargo.toml).
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 /// Check the GitHub releases API for a newer version. Returns
-/// `Some("x.y.z")` if a newer tag exists, `None` otherwise.
+/// `Some(UpdateInfo)` if a newer tag exists, `None` otherwise.
 /// Swallows all errors (network, parse, etc.) — a failed check
 /// is silently ignored so the app never blocks on this.
 ///
@@ -22,7 +38,7 @@ const CURRENT: &str = env!("CARGO_PKG_VERSION");
 ///   so the user sees both newer prereleases and stable promotions.
 /// - Stable build (e.g. `0.1.13`): only considers stable releases,
 ///   so users on the Homebrew tap never get pointed at a prerelease.
-pub async fn check_for_update() -> Option<String> {
+pub async fn check_for_update() -> Option<UpdateInfo> {
     let client = reqwest::Client::builder()
         .user_agent("slashpad-update-check")
         .build()
@@ -53,11 +69,55 @@ pub async fn check_for_update() -> Option<String> {
         .strip_prefix('v')
         .unwrap_or(&candidate.tag_name);
 
-    if is_newer(latest, CURRENT) {
-        Some(latest.to_string())
-    } else {
-        None
+    if !is_newer(latest, CURRENT) {
+        return None;
     }
+
+    // Find the .app zip asset for the current architecture.
+    let arch = std::env::consts::ARCH; // "aarch64" or "x86_64"
+    let zip_name = format!("Slashpad-darwin-{arch}.zip");
+    let download_url = candidate
+        .assets
+        .iter()
+        .find(|a| a.name == zip_name)
+        .map(|a| a.browser_download_url.clone());
+
+    Some(UpdateInfo {
+        version: latest.to_string(),
+        download_url,
+    })
+}
+
+/// Download a .app zip from the given URL to a temp file.
+/// Returns the path to the downloaded zip.
+pub async fn download_update(url: &str) -> Result<PathBuf, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("slashpad-update")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("download failed: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("download returned {}", response.status()));
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("failed to read response: {e}"))?;
+
+    let tmp_dir = std::env::temp_dir().join("slashpad-update");
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("failed to create temp dir: {e}"))?;
+
+    let zip_path = tmp_dir.join("Slashpad-update.zip");
+    std::fs::write(&zip_path, &bytes).map_err(|e| format!("failed to write zip: {e}"))?;
+
+    Ok(zip_path)
 }
 
 /// Semver comparison that handles pre-release suffixes.

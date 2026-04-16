@@ -17,6 +17,8 @@ pub fn view<'a>(
     preferred_terminal: PreferredTerminal,
     load_user_settings: bool,
     update_status: &UpdateStatus,
+    launch_at_login: bool,
+    is_app_bundle: bool,
 ) -> Element<'a, Message> {
     let mut title = row![
         text("/slashpad").size(15).color(super::theme::ACCENT),
@@ -35,7 +37,7 @@ pub fn view<'a>(
                     .color(super::theme::MUTED),
             );
         }
-        UpdateStatus::Available(version) => {
+        UpdateStatus::Available { version, .. } => {
             title = title.push(
                 button(
                     text(format!("  Upgrade to v{version}"))
@@ -324,6 +326,52 @@ pub fn view<'a>(
     ]
     .spacing(6);
 
+    // "Launch at login" — only shown for .app bundle installs.
+    // Homebrew users use `brew services` instead.
+    let mut body_items: Vec<Element<'a, Message>> = vec![
+        title.into(),
+        api_row.into(),
+        hotkey_row.into(),
+        terminal_row.into(),
+        user_settings_row.into(),
+    ];
+
+    if is_app_bundle {
+        let login_checkbox =
+            checkbox("Launch at login", launch_at_login)
+                .on_toggle(Message::LaunchAtLoginToggled)
+                .size(14)
+                .text_size(13)
+                .spacing(8)
+                .style(|_theme: &iced::Theme, status| {
+                    let checked = matches!(
+                        status,
+                        iced::widget::checkbox::Status::Active { is_checked: true }
+                            | iced::widget::checkbox::Status::Hovered { is_checked: true }
+                            | iced::widget::checkbox::Status::Disabled { is_checked: true }
+                    );
+                    iced::widget::checkbox::Style {
+                        background: iced::Background::Color(if checked {
+                            super::theme::ACCENT
+                        } else {
+                            super::theme::SURFACE_2
+                        }),
+                        icon_color: super::theme::SURFACE_0,
+                        border: iced::Border {
+                            color: if checked {
+                                super::theme::ACCENT
+                            } else {
+                                super::theme::SURFACE_3
+                            },
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        text_color: Some(super::theme::TEXT),
+                    }
+                });
+        body_items.push(login_checkbox.into());
+    }
+
     let actions = row![
         button(text("Show Launcher").size(12).color(super::theme::TEXT))
             .on_press(Message::HotkeyPressed)
@@ -355,16 +403,11 @@ pub fn view<'a>(
     ]
     .spacing(8);
 
-    let body = column![
-        title,
-        api_row,
-        hotkey_row,
-        terminal_row,
-        user_settings_row,
-        actions
-    ]
-    .spacing(14)
-    .padding(16);
+    body_items.push(actions.into());
+
+    let body = Column::with_children(body_items)
+        .spacing(14)
+        .padding(16);
 
     container(body)
         .width(Length::Fill)

@@ -58,14 +58,14 @@ For a **stable release**:
 ```
 
 This script:
-1. Creates a GitHub release (prerelease or full, depending on the flag) with auto-generated notes
+1. Creates a GitHub prerelease with auto-generated notes (all releases start as prereleases)
 2. Waits for the source tarball to become available and computes its SHA
-3. Waits for CI-built binaries (aarch64 + x86_64) to be attached to the release (~3-5 min)
+3. Waits for CI assets: binaries (aarch64 + x86_64), DMGs, and .app zips (~5-8 min)
 4. Computes the SHA-256 of both binaries
-5. For **stable releases only**: updates `Formula/slashpad.rb` with all URLs and SHAs, then clones `agencyenterprise/homebrew-tap`, copies the formula, commits and pushes
+5. For **stable releases only**: updates `Formula/slashpad.rb` with all URLs and SHAs, clones `agencyenterprise/homebrew-tap`, copies the formula, commits and pushes, then promotes the release from prerelease to full release
 
-**Note:** The release script will block for a few minutes while GitHub Actions builds
-the binaries. This is expected — it polls until both binaries appear on the release.
+**Note:** The release script will block for several minutes while GitHub Actions builds
+the binaries and assembles the DMGs. This is expected — it polls until all assets appear.
 
 ### 5. Commit the updated formula (stable releases only)
 
@@ -84,8 +84,9 @@ git push origin main
 Print a summary:
 - Version: X.Y.Z
 - Release URL: `https://github.com/agencyenterprise/slashpad/releases/tag/vX.Y.Z`
+- DMG downloads (Apple Silicon + Intel)
 - For stable releases:
   - Install command: `brew install agencyenterprise/tap/slashpad`
   - Upgrade command: `brew upgrade slashpad`
 - For prereleases:
-  - Note: Prerelease — not published to Homebrew. Download from the release page.
+  - Note: Prerelease — not published to Homebrew. Download DMG from the release page.

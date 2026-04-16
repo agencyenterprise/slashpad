@@ -69,6 +69,98 @@ fn find_brew() -> Option<&'static str> {
         .find(|path| std::path::Path::new(path).exists())
 }
 
+/// True when the running binary is inside a `.app` bundle.
+fn is_app_bundle() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+        .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
+        .unwrap_or(false)
+}
+
+/// Return the `.app` bundle directory path (e.g. `/Applications/Slashpad.app`).
+fn app_bundle_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    // Walk up from .../Slashpad.app/Contents/MacOS/slashpad to .../Slashpad.app
+    exe.parent()?.parent()?.parent().map(|p| p.to_path_buf())
+}
+
+/// Run `brew update && brew upgrade slashpad`.
+async fn brew_upgrade() -> Result<(), String> {
+    let brew = find_brew()
+        .ok_or_else(|| "brew not found — install Homebrew or upgrade manually".to_string())?;
+
+    let update = tokio::process::Command::new(brew)
+        .arg("update")
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !update.status.success() {
+        return Err(String::from_utf8_lossy(&update.stderr).to_string());
+    }
+
+    let upgrade = tokio::process::Command::new(brew)
+        .args(["upgrade", "slashpad"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !upgrade.status.success() {
+        return Err(String::from_utf8_lossy(&upgrade.stderr).to_string());
+    }
+
+    Ok(())
+}
+
+/// Extract the downloaded .app zip and replace the current bundle.
+fn replace_app_bundle(
+    zip_path: &std::path::Path,
+    bundle_path: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let bundle = bundle_path.ok_or("cannot determine .app bundle path")?;
+
+    let tmp_dir = zip_path
+        .parent()
+        .unwrap_or(std::path::Path::new("/tmp"))
+        .join("extracted");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    // Use `unzip` to extract — avoids adding a zip crate dependency.
+    let status = std::process::Command::new("unzip")
+        .args(["-q", "-o"])
+        .arg(zip_path)
+        .arg("-d")
+        .arg(&tmp_dir)
+        .status()
+        .map_err(|e| format!("failed to run unzip: {e}"))?;
+    if !status.success() {
+        return Err("unzip failed".to_string());
+    }
+
+    // The zip contains Slashpad.app/ at its root.
+    let new_app = tmp_dir.join("Slashpad.app");
+    if !new_app.exists() {
+        return Err("Slashpad.app not found in downloaded zip".to_string());
+    }
+
+    // Atomic-ish replacement: rename old to .bak, move new into place.
+    let backup = bundle.with_extension("app.bak");
+    let _ = std::fs::remove_dir_all(&backup);
+    std::fs::rename(bundle, &backup)
+        .map_err(|e| format!("failed to move old bundle to backup: {e}"))?;
+    if let Err(e) = std::fs::rename(&new_app, bundle) {
+        // Rollback: try to restore the backup.
+        let _ = std::fs::rename(&backup, bundle);
+        return Err(format!("failed to move new bundle into place: {e}"));
+    }
+
+    // Clean up backup and temp files.
+    let _ = std::fs::remove_dir_all(&backup);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    let _ = std::fs::remove_file(zip_path);
+
+    Ok(())
+}
+
 fn snap_chat_to_bottom() -> Task<Message> {
     scrollable::snap_to(
         CHAT_SCROLL_ID.clone(),
@@ -168,8 +260,8 @@ pub enum External {
         chat_id: ChatId,
         messages: Vec<ChatMessageView>,
     },
-    /// Update check completed. `Some(version)` if newer, `None` if current.
-    UpdateAvailable(Option<String>),
+    /// Update check completed. `Some(info)` if newer, `None` if current.
+    UpdateAvailable(Option<crate::updates::UpdateInfo>),
     /// Left-click on the menu-bar tray icon — opens the settings window
     /// anchored below the tray icon. Coordinates are logical pixels in
     /// winit's top-left-origin system rooted at the primary monitor.
@@ -283,6 +375,8 @@ pub enum Message {
     /// with skills from `~/.claude/skills/`; when `false`, scope is
     /// limited to `~/.slashpad/`.
     LoadUserSettingsToggled(bool),
+    /// User toggled the "Launch at login" checkbox (.app installs only).
+    LaunchAtLoginToggled(bool),
     /// Tray left-click → open a new settings window anchored below the
     /// tray icon at the given logical-pixel rect.
     TrayOpenSettings {
@@ -355,12 +449,11 @@ pub enum Message {
         window_id: iced::window::Id,
         position: iced::Point,
     },
-    /// Background update check completed. `Some(version)` if newer,
-    /// `None` if already on the latest.
-    UpdateAvailable(Option<String>),
-    /// User clicked "Upgrade to vX.Y.Z" — runs `brew upgrade slashpad`.
+    /// Background update check completed.
+    UpdateAvailable(Option<crate::updates::UpdateInfo>),
+    /// User clicked "Upgrade to vX.Y.Z".
     UpgradeClicked,
-    /// The background `brew upgrade` finished (success or failure).
+    /// The background upgrade finished (success or failure).
     UpgradeFinished(Result<(), String>),
 }
 
@@ -488,9 +581,12 @@ pub enum UpdateStatus {
     Checking,
     /// Running version is the latest.
     UpToDate,
-    /// A newer version exists.
-    Available(String),
-    /// `brew update && brew upgrade slashpad` in progress.
+    /// A newer version exists. `download_url` is set for `.app` installs.
+    Available {
+        version: String,
+        download_url: Option<String>,
+    },
+    /// Upgrade in progress (downloading or brew upgrading).
     Upgrading,
 }
 
@@ -1149,10 +1245,12 @@ impl Slashpad {
                 Task::none()
             }
 
-            Message::UpdateAvailable(version) => {
-                // `None` means the running version is already the latest.
-                self.update_status = match version {
-                    Some(v) => UpdateStatus::Available(v),
+            Message::UpdateAvailable(info) => {
+                self.update_status = match info {
+                    Some(i) => UpdateStatus::Available {
+                        version: i.version,
+                        download_url: i.download_url,
+                    },
                     None => UpdateStatus::UpToDate,
                 };
                 Task::none()
@@ -1162,66 +1260,71 @@ impl Slashpad {
                 if matches!(self.update_status, UpdateStatus::Upgrading) {
                     return Task::none();
                 }
+
+                // Capture the download URL before we overwrite the status.
+                let download_url = match &self.update_status {
+                    UpdateStatus::Available { download_url, .. } => download_url.clone(),
+                    _ => None,
+                };
+
                 self.update_status = UpdateStatus::Upgrading;
-                Task::perform(
-                    async {
-                        let brew = find_brew().ok_or_else(|| {
-                            "brew not found — install Homebrew or upgrade manually".to_string()
-                        })?;
 
-                        // Fetch the latest formulae so brew knows about
-                        // the new release.
-                        let update = tokio::process::Command::new(brew)
-                            .arg("update")
-                            .output()
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        if !update.status.success() {
-                            return Err(String::from_utf8_lossy(&update.stderr).to_string());
-                        }
-
-                        let upgrade = tokio::process::Command::new(brew)
-                            .args(["upgrade", "slashpad"])
-                            .output()
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        if !upgrade.status.success() {
-                            return Err(String::from_utf8_lossy(&upgrade.stderr).to_string());
-                        }
-
-                        Ok(())
-                    },
-                    Message::UpgradeFinished,
-                )
+                if is_app_bundle() {
+                    if let Some(url) = download_url {
+                        // .app install: download the new .app zip, replace, relaunch.
+                        let bundle_path = app_bundle_path();
+                        Task::perform(
+                            async move {
+                                let zip_path =
+                                    crate::updates::download_update(&url).await?;
+                                replace_app_bundle(&zip_path, bundle_path.as_deref())?;
+                                Ok(())
+                            },
+                            Message::UpgradeFinished,
+                        )
+                    } else {
+                        // No .app zip available — fall back to brew.
+                        Task::perform(brew_upgrade(), Message::UpgradeFinished)
+                    }
+                } else {
+                    // Homebrew install.
+                    Task::perform(brew_upgrade(), Message::UpgradeFinished)
+                }
             }
 
             Message::UpgradeFinished(result) => {
                 match result {
                     Ok(()) => {
-                        // The new binary is installed. Spawn a detached
-                        // restart command then exit. The command waits for
-                        // us to die, then `brew services restart` brings
-                        // up the new binary as a fresh process (clean PID,
-                        // clean AppKit state, tray icon recreated).
                         self.chats.clear();
-                        if let Some(brew) = find_brew() {
-                            use std::process::Stdio;
-                            let _ = std::process::Command::new("sh")
-                                .args([
-                                    "-c",
-                                    &format!(
-                                        "sleep 2 && {brew} services restart slashpad"
-                                    ),
-                                ])
-                                .stdin(Stdio::null())
-                                .stdout(Stdio::null())
-                                .stderr(Stdio::null())
-                                .spawn();
+                        if is_app_bundle() {
+                            // Relaunch the .app via `open` for clean AppKit state.
+                            if let Some(path) = app_bundle_path() {
+                                let _ = std::process::Command::new("open")
+                                    .arg(path)
+                                    .spawn();
+                            }
+                            std::process::exit(0);
+                        } else {
+                            // Homebrew: spawn a detached restart, then exit.
+                            if let Some(brew) = find_brew() {
+                                use std::process::Stdio;
+                                let _ = std::process::Command::new("sh")
+                                    .args([
+                                        "-c",
+                                        &format!(
+                                            "sleep 2 && {brew} services restart slashpad"
+                                        ),
+                                    ])
+                                    .stdin(Stdio::null())
+                                    .stdout(Stdio::null())
+                                    .stderr(Stdio::null())
+                                    .spawn();
+                            }
+                            std::process::exit(0);
                         }
-                        std::process::exit(0);
                     }
                     Err(e) => {
-                        eprintln!("[slashpad] brew upgrade failed: {e}");
+                        eprintln!("[slashpad] upgrade failed: {e}");
                         // Fall back to showing the update button again.
                         self.update_status = UpdateStatus::Idle;
                     }
@@ -1501,6 +1604,22 @@ impl Slashpad {
                 Task::none()
             }
 
+            Message::LaunchAtLoginToggled(enabled) => {
+                self.settings.launch_at_login = enabled;
+                if let Err(e) = self.settings.save() {
+                    eprintln!("[slashpad] failed to save launchAtLogin: {e}");
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    if enabled {
+                        crate::platform::macos::register_login_item();
+                    } else {
+                        crate::platform::macos::unregister_login_item();
+                    }
+                }
+                Task::none()
+            }
+
             Message::TrayOpenSettings {
                 tray_x,
                 tray_y,
@@ -1716,6 +1835,8 @@ impl Slashpad {
                 self.settings.preferred_terminal,
                 self.settings.load_user_settings,
                 &self.update_status,
+                self.settings.launch_at_login,
+                is_app_bundle(),
             ))
             .padding(8)
             .width(iced::Length::Fill)

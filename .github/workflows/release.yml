@@ -11,8 +11,10 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             arch: aarch64
+            bun_arch: aarch64
           - target: x86_64-apple-darwin
             arch: x86_64
+            bun_arch: x64
     runs-on: macos-14
     permissions:
       contents: write
@@ -27,10 +29,21 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Upload binary to release
+      - name: Assemble .app bundle
+        run: ./scripts/build-app.sh ${{ matrix.target }} ${{ matrix.arch }}
+
+      - name: Create DMG
+        run: |
+          brew install create-dmg
+          ./scripts/create-dmg.sh ${{ matrix.arch }}
+
+      - name: Upload assets to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cp target/${{ matrix.target }}/release/slashpad slashpad-darwin-${{ matrix.arch }}
           gh release upload "${{ github.event.release.tag_name }}" \
-            slashpad-darwin-${{ matrix.arch }} --clobber
+            slashpad-darwin-${{ matrix.arch }} \
+            build/Slashpad-darwin-${{ matrix.arch }}.zip \
+            build/Slashpad-darwin-${{ matrix.arch }}.dmg \
+            --clobber

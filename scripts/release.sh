@@ -60,16 +60,18 @@ TARBALL_SHA=$(curl -sL "$TARBALL_URL" | shasum -a 256 | awk '{print $1}')
 echo "    tarball sha256: ${TARBALL_SHA}"
 
 # ── 3. Wait for CI-built binaries to be attached ──────────────────
-echo "==> Waiting for CI binaries (this may take a few minutes)..."
-for i in $(seq 1 90); do
+echo "==> Waiting for CI assets (binaries + DMGs, this may take a few minutes)..."
+for i in $(seq 1 120); do
     ASSETS=$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[].name' 2>/dev/null || true)
     if echo "$ASSETS" | grep -q "slashpad-darwin-aarch64" && \
-       echo "$ASSETS" | grep -q "slashpad-darwin-x86_64"; then
-        echo "    Both binaries found"
+       echo "$ASSETS" | grep -q "slashpad-darwin-x86_64" && \
+       echo "$ASSETS" | grep -q "Slashpad-darwin-aarch64.dmg" && \
+       echo "$ASSETS" | grep -q "Slashpad-darwin-x86_64.dmg"; then
+        echo "    All assets found"
         break
     fi
-    if [ "$i" -eq 90 ]; then
-        echo "    ERROR: CI binaries not attached after ~6 minutes" >&2
+    if [ "$i" -eq 120 ]; then
+        echo "    ERROR: CI assets not attached after ~8 minutes" >&2
         echo "    Check https://github.com/${REPO}/actions for build status" >&2
         exit 1
     fi
@@ -130,8 +132,12 @@ fi
 
 echo ""
 echo "==> Done! Release: https://github.com/${REPO}/releases/tag/${TAG}"
+echo ""
+echo "    DMG (Apple Silicon): https://github.com/${REPO}/releases/download/${TAG}/Slashpad-darwin-aarch64.dmg"
+echo "    DMG (Intel):         https://github.com/${REPO}/releases/download/${TAG}/Slashpad-darwin-x86_64.dmg"
+echo ""
 if $IS_PRERELEASE; then
-    echo "    (prerelease — download binaries from the release page)"
+    echo "    (prerelease — download from the release page)"
 else
     echo "    Install: brew install agencyenterprise/tap/slashpad"
     echo "    Upgrade: brew upgrade slashpad"

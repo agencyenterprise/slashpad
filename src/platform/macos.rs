@@ -389,6 +389,50 @@ pub unsafe fn first_app_window_ptr() -> *mut c_void {
     std::ptr::null_mut()
 }
 
+// ── Login Items (SMAppService, macOS 13+) ────────────────────────
+
+/// Register the app as a Login Item so it launches at login.
+/// Uses `SMAppService.mainApp.register()` via raw message sends.
+pub fn register_login_item() -> bool {
+    let Some(cls) = AnyClass::get("SMAppService") else {
+        eprintln!("[platform/macos] SMAppService class not found (macOS 13+ required)");
+        return false;
+    };
+    let service: *mut AnyObject = unsafe { msg_send![cls, mainApp] };
+    if service.is_null() {
+        return false;
+    }
+    let result: Bool = unsafe { msg_send![service, registerAndReturnError: std::ptr::null_mut::<*mut AnyObject>()] };
+    result.as_bool()
+}
+
+/// Unregister the app as a Login Item.
+pub fn unregister_login_item() -> bool {
+    let Some(cls) = AnyClass::get("SMAppService") else {
+        return false;
+    };
+    let service: *mut AnyObject = unsafe { msg_send![cls, mainApp] };
+    if service.is_null() {
+        return false;
+    }
+    let result: Bool = unsafe { msg_send![service, unregisterAndReturnError: std::ptr::null_mut::<*mut AnyObject>()] };
+    result.as_bool()
+}
+
+/// Check if the app is currently registered as a Login Item.
+/// SMAppServiceStatus: 0 = notRegistered, 1 = enabled, 2 = requiresApproval, 3 = notFound.
+pub fn is_login_item_enabled() -> bool {
+    let Some(cls) = AnyClass::get("SMAppService") else {
+        return false;
+    };
+    let service: *mut AnyObject = unsafe { msg_send![cls, mainApp] };
+    if service.is_null() {
+        return false;
+    }
+    let status: isize = unsafe { msg_send![service, status] };
+    status == 1 // SMAppServiceStatusEnabled
+}
+
 /// Shim that suppresses an unused import on non-macos targets.
 #[allow(dead_code)]
 fn _unused(_: &AnyObject) {}
