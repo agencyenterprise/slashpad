@@ -10,7 +10,6 @@ class Slashpad < Formula
   #   curl -sL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-darwin-x64.zip" | shasum -a 256
   BUN_VERSION = "1.3.12"
 
-  depends_on "rust" => :build
   depends_on :macos
 
   resource "bun" do
@@ -23,8 +22,25 @@ class Slashpad < Formula
     end
   end
 
+  resource "slashpad-binary" do
+    if Hardware::CPU.arm?
+      url "https://github.com/agencyenterprise/slashpad/releases/download/v#{version}/slashpad-darwin-aarch64"
+      sha256 ""
+    else
+      url "https://github.com/agencyenterprise/slashpad/releases/download/v#{version}/slashpad-darwin-x86_64"
+      sha256 ""
+    end
+  end
+
   def install
-    system "cargo", "install", *std_cargo_args
+    resource("slashpad-binary").stage do
+      if Hardware::CPU.arm?
+        bin.install "slashpad-darwin-aarch64" => "slashpad"
+      else
+        bin.install "slashpad-darwin-x86_64" => "slashpad"
+      end
+      chmod 0755, bin/"slashpad"
+    end
 
     libexec.install "agent"
     libexec.install "package.json"

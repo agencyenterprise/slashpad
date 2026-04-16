@@ -41,10 +41,14 @@ git push origin main
 
 This script:
 1. Creates a GitHub prerelease with auto-generated notes
-2. Waits for the tarball to become available
-3. Computes the SHA-256 of the tarball
-4. Updates `Formula/slashpad.rb` in this repo
-5. Clones `agencyenterprise/homebrew-tap`, copies the formula, commits and pushes
+2. Waits for the source tarball to become available and computes its SHA
+3. Waits for CI-built binaries (aarch64 + x86_64) to be attached to the release (~3-5 min)
+4. Computes the SHA-256 of both binaries
+5. Updates `Formula/slashpad.rb` with all URLs and SHAs
+6. Clones `agencyenterprise/homebrew-tap`, copies the formula, commits and pushes
+
+**Note:** The release script will block for a few minutes while GitHub Actions builds
+the binaries. This is expected — it polls until both binaries appear on the release.
 
 ### 5. Commit the updated formula
 

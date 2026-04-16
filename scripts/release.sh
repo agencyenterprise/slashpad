@@ -13,6 +13,8 @@ TAG="v${VERSION}"
 REPO="agencyenterprise/slashpad"
 TAP_REPO="agencyenterprise/homebrew-tap"
 TARBALL_URL="https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz"
+BINARY_AARCH64_URL="https://github.com/${REPO}/releases/download/${TAG}/slashpad-darwin-aarch64"
+BINARY_X86_64_URL="https://github.com/${REPO}/releases/download/${TAG}/slashpad-darwin-x86_64"
 
 echo "==> Releasing ${TAG}"
 
@@ -28,7 +30,7 @@ else
     echo "    Created prerelease ${TAG}"
 fi
 
-# ── 2. Wait for the tarball to become available ─────────────────────
+# ── 2. Wait for the source tarball ────────────────────────────────
 echo "==> Waiting for GitHub to serve the tarball..."
 for i in $(seq 1 30); do
     if curl -sfIL "$TARBALL_URL" >/dev/null 2>&1; then
@@ -40,18 +42,44 @@ for i in $(seq 1 30); do
     fi
     sleep 2
 done
+TARBALL_SHA=$(curl -sL "$TARBALL_URL" | shasum -a 256 | awk '{print $1}')
+echo "    tarball sha256: ${TARBALL_SHA}"
 
-# ── 3. Compute SHA-256 ─────────────────────────────────────────────
-SHA=$(curl -sL "$TARBALL_URL" | shasum -a 256 | awk '{print $1}')
-echo "    sha256: ${SHA}"
+# ── 3. Wait for CI-built binaries to be attached ──────────────────
+echo "==> Waiting for CI binaries (this may take a few minutes)..."
+for i in $(seq 1 90); do
+    ASSETS=$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[].name' 2>/dev/null || true)
+    if echo "$ASSETS" | grep -q "slashpad-darwin-aarch64" && \
+       echo "$ASSETS" | grep -q "slashpad-darwin-x86_64"; then
+        echo "    Both binaries found"
+        break
+    fi
+    if [ "$i" -eq 90 ]; then
+        echo "    ERROR: CI binaries not attached after ~6 minutes" >&2
+        echo "    Check https://github.com/${REPO}/actions for build status" >&2
+        exit 1
+    fi
+    sleep 4
+done
 
-# ── 4. Update the formula in this repo (reference copy) ────────────
-# Only replace the top-level url/sha256 (lines 4-5), not resource blocks.
+# ── 4. Compute binary SHAs ────────────────────────────────────────
+AARCH64_SHA=$(curl -sL "$BINARY_AARCH64_URL" | shasum -a 256 | awk '{print $1}')
+X86_64_SHA=$(curl -sL "$BINARY_X86_64_URL" | shasum -a 256 | awk '{print $1}')
+echo "    aarch64 sha256: ${AARCH64_SHA}"
+echo "    x86_64  sha256: ${X86_64_SHA}"
+
+# ── 5. Update the formula in this repo ────────────────────────────
+# Source tarball URL + SHA (lines 4-5)
 sed -i '' "4s|url \".*\"|url \"${TARBALL_URL}\"|" Formula/slashpad.rb
-sed -i '' "5s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/slashpad.rb
+sed -i '' "5s|sha256 \".*\"|sha256 \"${TARBALL_SHA}\"|" Formula/slashpad.rb
+
+# Binary resource SHAs — match the line after each binary URL
+sed -i '' "/slashpad-darwin-aarch64/{n;s|sha256 \".*\"|sha256 \"${AARCH64_SHA}\"|;}" Formula/slashpad.rb
+sed -i '' "/slashpad-darwin-x86_64/{n;s|sha256 \".*\"|sha256 \"${X86_64_SHA}\"|;}" Formula/slashpad.rb
+
 echo "==> Updated Formula/slashpad.rb"
 
-# ── 5. Clone tap repo, update formula, push ────────────────────────
+# ── 6. Clone tap repo, update formula, push ───────────────────────
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
