@@ -1198,17 +1198,27 @@ impl Slashpad {
             Message::UpgradeFinished(result) => {
                 match result {
                     Ok(()) => {
-                        // The new binary is installed. Re-exec ourselves —
-                        // after `brew upgrade` the symlink at current_exe()
-                        // points to the new binary. This works whether
-                        // launchd is managing us or not.
+                        // The new binary is installed. Spawn a detached
+                        // restart command then exit. The command waits for
+                        // us to die, then `brew services restart` brings
+                        // up the new binary as a fresh process (clean PID,
+                        // clean AppKit state, tray icon recreated).
                         self.chats.clear();
-                        let exe = std::env::current_exe().unwrap_or_default();
-                        use std::os::unix::process::CommandExt;
-                        let err = std::process::Command::new(&exe).exec();
-                        // exec() only returns on error.
-                        eprintln!("[slashpad] re-exec failed: {err}");
-                        std::process::exit(1);
+                        if let Some(brew) = find_brew() {
+                            use std::process::Stdio;
+                            let _ = std::process::Command::new("sh")
+                                .args([
+                                    "-c",
+                                    &format!(
+                                        "sleep 2 && {brew} services restart slashpad"
+                                    ),
+                                ])
+                                .stdin(Stdio::null())
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::null())
+                                .spawn();
+                        }
+                        std::process::exit(0);
                     }
                     Err(e) => {
                         eprintln!("[slashpad] brew upgrade failed: {e}");
