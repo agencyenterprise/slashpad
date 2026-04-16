@@ -1,6 +1,6 @@
 [package]
 name = "slashpad"
-version = "0.1.20"
+version = "0.1.21"
 edition = "2021"
 description = "A desktop AI command palette powered by Claude"
 license = "MIT"
