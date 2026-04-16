@@ -150,6 +150,31 @@ pub struct SessionInfo {
 /// once the `SessionId` event arrives.
 pub type ChatId = u64;
 
+/// A user "pin" — captured when they press Cmd+Shift+P. Unifies two
+/// previously separate concepts ("pin window position" and "stick
+/// chat"): pinning always locks the palette's position, and *also*
+/// locks the current chat if the user pinned while viewing one.
+///
+/// Lifecycle:
+/// - Created by `Message::TogglePin` (or its async cousin
+///   `Message::CommitPin` when the current position wasn't already
+///   known from a drag).
+/// - `position` tracks subsequent user drags while pinned (see
+///   `Message::WindowMoved`).
+/// - `chat_id` is set from `active_chat_id` at pin time if the user
+///   was in `Mode::Chatting`. It survives navigation — summoning the
+///   palette later jumps back into the pinned chat regardless of
+///   where the user navigated. Degrades to `None` inline in
+///   `show_palette` if the referenced chat has since been removed.
+/// - Cleared entirely by a second Cmd+Shift+P (unpin).
+///
+/// In-memory only — does not persist across app restarts.
+#[derive(Debug, Clone, Copy)]
+pub struct Pin {
+    pub position: iced::Point,
+    pub chat_id: Option<ChatId>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatStatus {
     /// Sidecar spawned, no events yet.
