@@ -206,13 +206,11 @@ async function runTurn(userPrompt) {
     settingSources: payload.loadUserSettings ? ["user", "project"] : ["project"],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
-    // Belt-and-suspenders: the SDK's `bypassPermissions` +
-    // `allowDangerouslySkipPermissions` should be equivalent to the
-    // CLI's `--dangerously-skip-permissions`, but in practice some CLI
-    // versions still surface permission prompts under the SDK-level
-    // options alone. Force the hard bypass flag so the CLI really skips
-    // all permission checks for this session.
-    extraArgs: { "dangerously-skip-permissions": null },
+    // Workaround for claude-code#36168: bypassPermissions is broken in
+    // CLI versions after v2.1.77. The canUseTool callback catches any
+    // permission request that escapes step 3 (permission mode) and
+    // reaches step 5 in the SDK's evaluation chain.
+    canUseTool: async (_tool, input) => ({ behavior: "allow", updatedInput: input }),
     includePartialMessages: true,
   };
 
