@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./scripts/release.sh [version]
+# Usage: ./scripts/release.sh [version] [--prerelease]
 # If no version is given, reads it from Cargo.toml.
 
 VERSION="${1:-}"
-if [ -z "$VERSION" ]; then
+IS_PRERELEASE=false
+
+for arg in "$@"; do
+    if [ "$arg" = "--prerelease" ]; then
+        IS_PRERELEASE=true
+    fi
+done
+
+if [ -z "$VERSION" ] || [ "$VERSION" = "--prerelease" ]; then
     VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 fi
 
@@ -17,17 +25,24 @@ BINARY_AARCH64_URL="https://github.com/${REPO}/releases/download/${TAG}/slashpad
 BINARY_X86_64_URL="https://github.com/${REPO}/releases/download/${TAG}/slashpad-darwin-x86_64"
 
 echo "==> Releasing ${TAG}"
+if $IS_PRERELEASE; then
+    echo "    (prerelease — Homebrew tap will NOT be updated)"
+fi
 
-# ── 1. Create GitHub prerelease (also creates + pushes the tag) ─────
+# ── 1. Create GitHub release (also creates + pushes the tag) ──────
 if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
     echo "    Release ${TAG} already exists, skipping"
 else
-    gh release create "$TAG" \
-        --repo "$REPO" \
-        --title "Slashpad ${TAG}" \
-        --generate-notes \
-        --prerelease
-    echo "    Created prerelease ${TAG}"
+    RELEASE_FLAGS=(
+        --repo "$REPO"
+        --title "Slashpad ${TAG}"
+        --generate-notes
+    )
+    if $IS_PRERELEASE; then
+        RELEASE_FLAGS+=(--prerelease)
+    fi
+    gh release create "$TAG" "${RELEASE_FLAGS[@]}"
+    echo "    Created release ${TAG}"
 fi
 
 # ── 2. Wait for the source tarball ────────────────────────────────
@@ -68,40 +83,49 @@ X86_64_SHA=$(curl -sL "$BINARY_X86_64_URL" | shasum -a 256 | awk '{print $1}')
 echo "    aarch64 sha256: ${AARCH64_SHA}"
 echo "    x86_64  sha256: ${X86_64_SHA}"
 
-# ── 5. Update the formula in this repo ────────────────────────────
-# Source tarball URL + SHA (lines 4-5)
-sed -i '' "4s|url \".*\"|url \"${TARBALL_URL}\"|" Formula/slashpad.rb
-sed -i '' "5s|sha256 \".*\"|sha256 \"${TARBALL_SHA}\"|" Formula/slashpad.rb
-
-# Binary resource URLs + SHAs
-sed -i '' "s|releases/download/v[^/]*/slashpad-darwin-aarch64|releases/download/${TAG}/slashpad-darwin-aarch64|" Formula/slashpad.rb
-sed -i '' "s|releases/download/v[^/]*/slashpad-darwin-x86_64|releases/download/${TAG}/slashpad-darwin-x86_64|" Formula/slashpad.rb
-sed -i '' "/slashpad-darwin-aarch64/{n;s|sha256 \".*\"|sha256 \"${AARCH64_SHA}\"|;}" Formula/slashpad.rb
-sed -i '' "/slashpad-darwin-x86_64/{n;s|sha256 \".*\"|sha256 \"${X86_64_SHA}\"|;}" Formula/slashpad.rb
-
-echo "==> Updated Formula/slashpad.rb"
-
-# ── 6. Clone tap repo, update formula, push ───────────────────────
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
-
-echo "==> Cloning ${TAP_REPO}..."
-gh repo clone "$TAP_REPO" "$TMPDIR" -- -q
-
-mkdir -p "$TMPDIR/Formula"
-cp Formula/slashpad.rb "$TMPDIR/Formula/slashpad.rb"
-
-cd "$TMPDIR"
-git add Formula/slashpad.rb
-if git diff --cached --quiet; then
-    echo "    Tap formula already up to date"
+# ── 5. Update Homebrew formula (stable releases only) ─────────────
+if $IS_PRERELEASE; then
+    echo "==> Skipping Homebrew formula update (prerelease)"
 else
-    git commit -m "slashpad ${TAG}"
-    git push origin main
-    echo "    Pushed formula to ${TAP_REPO}"
+    # Source tarball URL + SHA (lines 4-5)
+    sed -i '' "4s|url \".*\"|url \"${TARBALL_URL}\"|" Formula/slashpad.rb
+    sed -i '' "5s|sha256 \".*\"|sha256 \"${TARBALL_SHA}\"|" Formula/slashpad.rb
+
+    # Binary resource URLs + SHAs
+    sed -i '' "s|releases/download/v[^/]*/slashpad-darwin-aarch64|releases/download/${TAG}/slashpad-darwin-aarch64|" Formula/slashpad.rb
+    sed -i '' "s|releases/download/v[^/]*/slashpad-darwin-x86_64|releases/download/${TAG}/slashpad-darwin-x86_64|" Formula/slashpad.rb
+    sed -i '' "/slashpad-darwin-aarch64/{n;s|sha256 \".*\"|sha256 \"${AARCH64_SHA}\"|;}" Formula/slashpad.rb
+    sed -i '' "/slashpad-darwin-x86_64/{n;s|sha256 \".*\"|sha256 \"${X86_64_SHA}\"|;}" Formula/slashpad.rb
+
+    echo "==> Updated Formula/slashpad.rb"
+
+    # ── 6. Clone tap repo, update formula, push ───────────────────
+    TMPDIR=$(mktemp -d)
+    trap 'rm -rf "$TMPDIR"' EXIT
+
+    echo "==> Cloning ${TAP_REPO}..."
+    gh repo clone "$TAP_REPO" "$TMPDIR" -- -q
+
+    mkdir -p "$TMPDIR/Formula"
+    cp Formula/slashpad.rb "$TMPDIR/Formula/slashpad.rb"
+
+    cd "$TMPDIR"
+    git add Formula/slashpad.rb
+    if git diff --cached --quiet; then
+        echo "    Tap formula already up to date"
+    else
+        git commit -m "slashpad ${TAG}"
+        git push origin main
+        echo "    Pushed formula to ${TAP_REPO}"
+    fi
+    cd - >/dev/null
 fi
-cd - >/dev/null
 
 echo ""
-echo "==> Done! Users can install with:"
-echo "    brew install agencyenterprise/tap/slashpad"
+echo "==> Done! Release: https://github.com/${REPO}/releases/tag/${TAG}"
+if $IS_PRERELEASE; then
+    echo "    (prerelease — download binaries from the release page)"
+else
+    echo "    Install: brew install agencyenterprise/tap/slashpad"
+    echo "    Upgrade: brew upgrade slashpad"
+fi

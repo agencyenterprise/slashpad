@@ -1,6 +1,6 @@
 ---
 name: release
-description: Release a new version of Slashpad. Use when the user says "release", "cut a release", "bump the version", "ship it", or asks to publish a new version. Handles version bumping, committing, tagging, creating a GitHub prerelease, and updating the Homebrew tap formula.
+description: Release a new version of Slashpad. Use when the user says "release", "cut a release", "bump the version", "ship it", or asks to publish a new version. Handles version bumping, committing, tagging, creating a GitHub release, and updating the Homebrew tap formula.
 ---
 
 # Release
@@ -10,17 +10,29 @@ description: Release a new version of Slashpad. Use when the user says "release"
 ### 1. Determine the new version
 
 Ask the user what kind of bump this is if not specified:
-- **patch** (0.1.0 → 0.1.1): bug fixes
+- **patch** (0.1.0 → 0.1.1): bug fixes — also promotes a prerelease to stable (0.1.1-pre.2 → 0.1.1)
 - **minor** (0.1.0 → 0.2.0): new features
 - **major** (0.1.0 → 1.0.0): breaking changes
+- **pre** (0.1.0 → 0.1.1-pre.1): prerelease — bumps the pre counter if already a prerelease (0.1.1-pre.1 → 0.1.1-pre.2)
 
 Read the current version from `Cargo.toml` line 3 and compute the new version.
+
+**Version computation rules:**
+
+Given current version `X.Y.Z` or `X.Y.Z-pre.N`:
+
+| Bump    | From stable `X.Y.Z` | From prerelease `X.Y.Z-pre.N` |
+|---------|---------------------|-------------------------------|
+| `patch` | `X.Y.(Z+1)`        | `X.Y.Z` (drop the pre suffix) |
+| `minor` | `X.(Y+1).0`        | `X.(Y+1).0`                   |
+| `major` | `(X+1).0.0`        | `(X+1).0.0`                   |
+| `pre`   | `X.Y.(Z+1)-pre.1`  | `X.Y.Z-pre.(N+1)`             |
 
 ### 2. Bump version in both manifests
 
 Update the `version` field in both files — these must stay in sync:
-- `Cargo.toml` (line 3): `version = "X.Y.Z"`
-- `package.json` (line 3): `"version": "X.Y.Z"`
+- `Cargo.toml` (line 3): `version = "X.Y.Z"` or `version = "X.Y.Z-pre.N"`
+- `package.json` (line 3): `"version": "X.Y.Z"` or `"version": "X.Y.Z-pre.N"`
 
 ### 3. Regenerate the lockfile and commit the version bump
 
@@ -35,22 +47,29 @@ git push origin main
 
 ### 4. Run the release script
 
+For a **prerelease**:
+```bash
+./scripts/release.sh X.Y.Z-pre.N --prerelease
+```
+
+For a **stable release**:
 ```bash
 ./scripts/release.sh X.Y.Z
 ```
 
 This script:
-1. Creates a GitHub prerelease with auto-generated notes
+1. Creates a GitHub release (prerelease or full, depending on the flag) with auto-generated notes
 2. Waits for the source tarball to become available and computes its SHA
 3. Waits for CI-built binaries (aarch64 + x86_64) to be attached to the release (~3-5 min)
 4. Computes the SHA-256 of both binaries
-5. Updates `Formula/slashpad.rb` with all URLs and SHAs
-6. Clones `agencyenterprise/homebrew-tap`, copies the formula, commits and pushes
+5. For **stable releases only**: updates `Formula/slashpad.rb` with all URLs and SHAs, then clones `agencyenterprise/homebrew-tap`, copies the formula, commits and pushes
 
 **Note:** The release script will block for a few minutes while GitHub Actions builds
 the binaries. This is expected — it polls until both binaries appear on the release.
 
-### 5. Commit the updated formula
+### 5. Commit the updated formula (stable releases only)
+
+Skip this step for prereleases — they don't update the Homebrew tap.
 
 The release script updates `Formula/slashpad.rb` with the new URL and SHA. Commit it:
 
@@ -65,5 +84,8 @@ git push origin main
 Print a summary:
 - Version: X.Y.Z
 - Release URL: `https://github.com/agencyenterprise/slashpad/releases/tag/vX.Y.Z`
-- Install command: `brew install agencyenterprise/tap/slashpad`
-- Upgrade command: `brew upgrade slashpad`
+- For stable releases:
+  - Install command: `brew install agencyenterprise/tap/slashpad`
+  - Upgrade command: `brew upgrade slashpad`
+- For prereleases:
+  - Note: Prerelease — not published to Homebrew. Download from the release page.
