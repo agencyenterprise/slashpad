@@ -1198,15 +1198,11 @@ impl Slashpad {
             Message::UpgradeFinished(result) => {
                 match result {
                     Ok(()) => {
-                        // The new binary is installed. Restart via brew
-                        // services so the updated version takes over.
+                        // The new binary is installed. Exit with a non-zero
+                        // code so launchd's `keep_alive crashed: true`
+                        // restarts us with the upgraded binary.
                         self.chats.clear();
-                        if let Some(brew) = find_brew() {
-                            let _ = std::process::Command::new(brew)
-                                .args(["services", "restart", "slashpad"])
-                                .spawn();
-                        }
-                        std::process::exit(0);
+                        std::process::exit(1);
                     }
                     Err(e) => {
                         eprintln!("[slashpad] brew upgrade failed: {e}");
@@ -2633,13 +2629,16 @@ impl Slashpad {
             return iced::window::close(id);
         }
 
-        // Kick off an update check every time settings opens.
-        self.update_status = UpdateStatus::Checking;
-        let tx = external_sender();
-        tokio::spawn(async move {
-            let result = crate::updates::check_for_update().await;
-            let _ = tx.send(External::UpdateAvailable(result));
-        });
+        // Kick off an update check every time settings opens — unless
+        // an upgrade is already in progress.
+        if !matches!(self.update_status, UpdateStatus::Upgrading) {
+            self.update_status = UpdateStatus::Checking;
+            let tx = external_sender();
+            tokio::spawn(async move {
+                let result = crate::updates::check_for_update().await;
+                let _ = tx.send(External::UpdateAvailable(result));
+            });
+        }
 
         // Each fresh open starts masked and re-synced with whatever is
         // actually stored in the keychain (covers the case where the
