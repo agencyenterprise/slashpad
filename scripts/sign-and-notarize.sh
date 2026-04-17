@@ -62,7 +62,7 @@ security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-# Import the certificate.
+# Import the .p12 (leaf cert + private key).
 security import "$P12_PATH" \
     -P "$APPLE_CERTIFICATE_PASSWORD" \
     -A \
@@ -70,12 +70,27 @@ security import "$P12_PATH" \
     -f pkcs12 \
     -k "$KEYCHAIN_PATH"
 
+# Import Apple intermediate certificates for a complete chain.
+# Without these, Apple's notary rejects the signature as invalid.
+CERT_TMP=$(mktemp -d)
+curl -sL "https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer" -o "$CERT_TMP/DeveloperIDG2CA.cer"
+curl -sL "https://www.apple.com/appleca/AppleIncRootCertificate.cer" -o "$CERT_TMP/AppleIncRoot.cer"
+security import "$CERT_TMP/DeveloperIDG2CA.cer" -k "$KEYCHAIN_PATH" -T /usr/bin/codesign || true
+security import "$CERT_TMP/AppleIncRoot.cer" -k "$KEYCHAIN_PATH" -T /usr/bin/codesign || true
+rm -rf "$CERT_TMP"
+echo "    Imported Apple intermediate certificates"
+
 # Allow codesign to access the keychain without prompting.
 security set-key-partition-list -S apple-tool:,apple:,codesign: \
     -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-# Add the temporary keychain to the search list.
+# Add the temporary keychain to the search list (replace, don't append,
+# to avoid picking up stale identities from other keychains).
 security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+# List all signing identities for diagnostics.
+echo "    Available identities:"
+security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
 # Find the signing identity.
 IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
@@ -85,6 +100,8 @@ IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
 
 if [ -z "$IDENTITY" ]; then
     echo "No 'Developer ID Application' identity found in certificate" >&2
+    echo "The .p12 must contain a 'Developer ID Application' certificate." >&2
+    echo "An 'Apple Developer' or 'Apple Development' certificate will not work." >&2
     exit 1
 fi
 
