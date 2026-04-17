@@ -122,7 +122,7 @@ find "$APP_DIR/Contents/Resources" -type f \( \
 \) | while read -r binary; do
     # Check if it's actually a Mach-O file (not a shell script or text file).
     if file "$binary" | grep -q "Mach-O"; then
-        codesign --force --options runtime \
+        codesign --force --timestamp --options runtime \
             --entitlements "$ENTITLEMENTS" \
             --sign "$IDENTITY" \
             "$binary"
@@ -130,23 +130,22 @@ find "$APP_DIR/Contents/Resources" -type f \( \
     fi
 done
 
-# Sign the main binary.
-codesign --force --options runtime \
-    --entitlements "$ENTITLEMENTS" \
-    --sign "$IDENTITY" \
-    "$APP_DIR/Contents/MacOS/slashpad"
-echo "    Signed slashpad binary"
-
-# Sign the entire .app bundle (covers Info.plist, resources, etc).
-codesign --force --options runtime \
+# Sign the entire .app bundle with --deep to ensure consistent
+# signatures throughout. The --deep flag signs the main executable
+# and re-signs nested code with the same identity.
+codesign --deep --force --timestamp --options runtime \
     --entitlements "$ENTITLEMENTS" \
     --sign "$IDENTITY" \
     "$APP_DIR"
-echo "    Signed Slashpad.app"
+echo "    Signed Slashpad.app (deep)"
 
 # Verify the signature.
-codesign --verify --deep --strict "$APP_DIR"
+codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 echo "    Signature verified"
+
+# Print signature details for the main binary (diagnostics).
+echo "    Main binary signature details:"
+codesign -dvv "$APP_DIR/Contents/MacOS/slashpad" 2>&1 | head -20
 
 # ── 3. Notarize ─────────────────────────────────────────────────
 echo "==> Notarizing Slashpad.app"
