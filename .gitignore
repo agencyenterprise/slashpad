@@ -11,3 +11,8 @@ skills/
 *.swo
 .vscode/
 .idea/
+*.cer
+*.pem
+*.p12
+*.key
+*.csr
