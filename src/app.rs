@@ -117,6 +117,7 @@ fn replace_app_bundle(
     bundle_path: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let bundle = bundle_path.ok_or("cannot determine .app bundle path")?;
+    eprintln!("[slashpad] replacing app bundle at {}", bundle.display());
 
     let tmp_dir = zip_path
         .parent()
@@ -125,6 +126,7 @@ fn replace_app_bundle(
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
     // Use `unzip` to extract — avoids adding a zip crate dependency.
+    eprintln!("[slashpad] extracting zip...");
     let status = std::process::Command::new("unzip")
         .args(["-q", "-o"])
         .arg(zip_path)
@@ -145,10 +147,13 @@ fn replace_app_bundle(
     // Atomic-ish replacement: rename old to .bak, move new into place.
     let backup = bundle.with_extension("app.bak");
     let _ = std::fs::remove_dir_all(&backup);
+    eprintln!("[slashpad] moving old bundle to backup...");
     std::fs::rename(bundle, &backup)
         .map_err(|e| format!("failed to move old bundle to backup: {e}"))?;
+    eprintln!("[slashpad] moving new bundle into place...");
     if let Err(e) = std::fs::rename(&new_app, bundle) {
         // Rollback: try to restore the backup.
+        eprintln!("[slashpad] move failed, rolling back: {e}");
         let _ = std::fs::rename(&backup, bundle);
         return Err(format!("failed to move new bundle into place: {e}"));
     }
@@ -158,6 +163,7 @@ fn replace_app_bundle(
     let _ = std::fs::remove_dir_all(&tmp_dir);
     let _ = std::fs::remove_file(zip_path);
 
+    eprintln!("[slashpad] bundle replacement complete");
     Ok(())
 }
 
@@ -1277,8 +1283,13 @@ impl Slashpad {
                             async move {
                                 let zip_path =
                                     crate::updates::download_update(&url).await?;
-                                replace_app_bundle(&zip_path, bundle_path.as_deref())?;
-                                Ok(())
+                                // replace_app_bundle is blocking (runs unzip),
+                                // so move it off the async executor.
+                                tokio::task::spawn_blocking(move || {
+                                    replace_app_bundle(&zip_path, bundle_path.as_deref())
+                                })
+                                .await
+                                .map_err(|e| format!("spawn_blocking failed: {e}"))?
                             },
                             Message::UpgradeFinished,
                         )

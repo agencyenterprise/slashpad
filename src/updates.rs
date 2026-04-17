@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 use std::path::PathBuf;
+use tokio::io::AsyncWriteExt;
 
 /// Minimal subset of the GitHub releases API response.
 #[derive(Deserialize)]
@@ -89,8 +90,11 @@ pub async fn check_for_update() -> Option<UpdateInfo> {
 }
 
 /// Download a .app zip from the given URL to a temp file.
+/// Streams to disk instead of buffering in memory (~67MB).
 /// Returns the path to the downloaded zip.
 pub async fn download_update(url: &str) -> Result<PathBuf, String> {
+    eprintln!("[slashpad] downloading update from {url}");
+
     let client = reqwest::Client::builder()
         .user_agent("slashpad-update")
         .build()
@@ -106,17 +110,32 @@ pub async fn download_update(url: &str) -> Result<PathBuf, String> {
         return Err(format!("download returned {}", response.status()));
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("failed to read response: {e}"))?;
+    let content_length = response.content_length().unwrap_or(0);
+    eprintln!("[slashpad] download size: {content_length} bytes");
 
     let tmp_dir = std::env::temp_dir().join("slashpad-update");
     std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("failed to create temp dir: {e}"))?;
 
     let zip_path = tmp_dir.join("Slashpad-update.zip");
-    std::fs::write(&zip_path, &bytes).map_err(|e| format!("failed to write zip: {e}"))?;
+    let mut file = tokio::fs::File::create(&zip_path)
+        .await
+        .map_err(|e| format!("failed to create zip file: {e}"))?;
 
+    let mut stream = response.bytes_stream();
+    let mut downloaded: u64 = 0;
+    use futures::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("download stream error: {e}"))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("failed to write chunk: {e}"))?;
+        downloaded += chunk.len() as u64;
+    }
+    file.flush()
+        .await
+        .map_err(|e| format!("failed to flush zip: {e}"))?;
+
+    eprintln!("[slashpad] download complete: {downloaded} bytes written to {}", zip_path.display());
     Ok(zip_path)
 }
 
