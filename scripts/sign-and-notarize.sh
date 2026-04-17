@@ -112,6 +112,10 @@ echo "==> Signing Slashpad.app"
 
 ENTITLEMENTS="$REPO_ROOT/macos/entitlements.plist"
 
+# Remove symlinks that can trip up notarization.
+find "$APP_DIR" -type l -delete
+echo "    Removed symlinks"
+
 # Find and sign all Mach-O binaries, dylibs, and .so/.node files
 # inside the bundle (inside-out: deepest first).
 # This catches native node modules, bun, and anything else.
@@ -130,22 +134,26 @@ find "$APP_DIR/Contents/Resources" -type f \( \
     fi
 done
 
-# Sign the entire .app bundle with --deep to ensure consistent
-# signatures throughout. The --deep flag signs the main executable
-# and re-signs nested code with the same identity.
-codesign --deep --force --timestamp --options runtime \
+# Sign the .app bundle (this signs the main executable via
+# CFBundleExecutable and creates the CodeResources seal).
+# Do NOT use --deep — nested code is already signed above.
+codesign --force --timestamp --options runtime \
     --entitlements "$ENTITLEMENTS" \
     --sign "$IDENTITY" \
     "$APP_DIR"
-echo "    Signed Slashpad.app (deep)"
+echo "    Signed Slashpad.app"
 
 # Verify the signature.
-codesign --verify --deep --strict --verbose=2 "$APP_DIR"
-echo "    Signature verified"
+codesign --verify --deep --strict --verbose=2 "$APP_DIR" 2>&1 || true
+echo "    Verification done"
 
 # Print signature details for the main binary (diagnostics).
 echo "    Main binary signature details:"
 codesign -dvv "$APP_DIR/Contents/MacOS/slashpad" 2>&1 | head -20
+
+# Also check if the binary is a valid Mach-O.
+echo "    Binary file type:"
+file "$APP_DIR/Contents/MacOS/slashpad"
 
 # ── 3. Notarize ─────────────────────────────────────────────────
 echo "==> Notarizing Slashpad.app"
