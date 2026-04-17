@@ -90,18 +90,28 @@ fi
 
 echo "    Signing identity: $IDENTITY"
 
-# ── 2. Sign the .app bundle ─────────────────────────────────────
+# ── 2. Sign ALL executables and libraries in the bundle ──────────
 echo "==> Signing Slashpad.app"
 
 ENTITLEMENTS="$REPO_ROOT/macos/entitlements.plist"
 
-# Sign embedded binaries first (inside-out signing).
-# The bundled bun binary needs JIT entitlements.
-codesign --force --options runtime \
-    --entitlements "$ENTITLEMENTS" \
-    --sign "$IDENTITY" \
-    "$APP_DIR/Contents/Resources/bin/bun"
-echo "    Signed bun"
+# Find and sign all Mach-O binaries, dylibs, and .so/.node files
+# inside the bundle (inside-out: deepest first).
+# This catches native node modules, bun, and anything else.
+echo "    Signing nested binaries..."
+find "$APP_DIR/Contents/Resources" -type f \( \
+    -name "*.dylib" -o -name "*.so" -o -name "*.node" -o \
+    -perm +111 \
+\) | while read -r binary; do
+    # Check if it's actually a Mach-O file (not a shell script or text file).
+    if file "$binary" | grep -q "Mach-O"; then
+        codesign --force --options runtime \
+            --entitlements "$ENTITLEMENTS" \
+            --sign "$IDENTITY" \
+            "$binary"
+        echo "      Signed: ${binary#$APP_DIR/}"
+    fi
+done
 
 # Sign the main binary.
 codesign --force --options runtime \
@@ -128,12 +138,35 @@ echo "==> Notarizing Slashpad.app"
 NOTARIZE_ZIP="$BUILD_DIR/Slashpad-notarize.zip"
 (cd "$BUILD_DIR" && zip -qr "Slashpad-notarize.zip" Slashpad.app)
 
-xcrun notarytool submit "$NOTARIZE_ZIP" \
+# Submit and capture the submission ID.
+SUBMIT_OUTPUT=$(xcrun notarytool submit "$NOTARIZE_ZIP" \
     --apple-id "$APPLE_ID" \
     --password "$APPLE_ID_PASSWORD" \
     --team-id "$APPLE_TEAM_ID" \
-    --wait
-echo "    Notarization complete"
+    --wait \
+    --output-format json 2>&1) || true
+
+echo "$SUBMIT_OUTPUT"
+
+# Extract status and ID from JSON output.
+NOTARIZE_STATUS=$(echo "$SUBMIT_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','unknown'))" 2>/dev/null || echo "unknown")
+SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+
+if [ "$NOTARIZE_STATUS" != "Accepted" ]; then
+    echo "    ERROR: Notarization failed with status: $NOTARIZE_STATUS"
+    # Fetch the detailed log to see what Apple rejected.
+    if [ -n "$SUBMISSION_ID" ]; then
+        echo "    Fetching notarization log..."
+        xcrun notarytool log "$SUBMISSION_ID" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            developer_log.json 2>&1 || true
+        cat developer_log.json 2>/dev/null || true
+    fi
+    exit 1
+fi
+echo "    Notarization accepted"
 
 # Clean up the notarization zip.
 rm -f "$NOTARIZE_ZIP"
