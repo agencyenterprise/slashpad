@@ -33,12 +33,59 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Assemble .app bundle
-        run: ./scripts/build-app.sh ${{ matrix.target }} ${{ matrix.arch }}
+        run: SKIP_ZIP=1 ./scripts/build-app.sh ${{ matrix.target }} ${{ matrix.arch }}
+
+      - name: Sign and notarize .app
+        if: env.APPLE_CERTIFICATE_BASE64 != ''
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: ./scripts/sign-and-notarize.sh ${{ matrix.arch }}
+
+      - name: Create unsigned zip (fallback)
+        if: env.APPLE_CERTIFICATE_BASE64 == ''
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+        run: |
+          cd build && zip -qr "Slashpad-darwin-${{ matrix.arch }}.zip" Slashpad.app
 
       - name: Create DMG
         run: |
           brew install create-dmg
           ./scripts/create-dmg.sh ${{ matrix.arch }}
+
+      - name: Sign DMG
+        if: env.APPLE_CERTIFICATE_BASE64 != ''
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          # Re-import certificate (keychain was cleaned up by sign-and-notarize.sh).
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          P12_PATH="$RUNNER_TEMP/certificate.p12"
+
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$P12_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$P12_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+              | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
+
+          codesign --force --sign "$IDENTITY" "build/Slashpad-darwin-${{ matrix.arch }}.dmg"
+          echo "Signed DMG with: $IDENTITY"
+
+          security delete-keychain "$KEYCHAIN_PATH"
+          rm -f "$P12_PATH"
 
       - name: Upload assets to release
         env:

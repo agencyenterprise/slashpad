@@ -110,8 +110,13 @@ fi
 echo "    Installed node_modules"
 
 # ── 6. Zip for upload ────────────────────────────────────────────
-ZIP_NAME="Slashpad-darwin-${ARCH}.zip"
-(cd "$BUILD_DIR" && zip -qr "$ZIP_NAME" Slashpad.app)
-echo "    Created $ZIP_NAME"
-
-echo "==> Done: $BUILD_DIR/$ZIP_NAME"
+# If signing is enabled (sign-and-notarize.sh runs between build-app and
+# create-dmg), the zip is created AFTER signing. Otherwise, create it now.
+if [ "${SKIP_ZIP:-}" != "1" ]; then
+    ZIP_NAME="Slashpad-darwin-${ARCH}.zip"
+    (cd "$BUILD_DIR" && zip -qr "$ZIP_NAME" Slashpad.app)
+    echo "    Created $ZIP_NAME"
+    echo "==> Done: $BUILD_DIR/$ZIP_NAME"
+else
+    echo "==> Done: $APP_DIR (zip deferred to after signing)"
+fi
