@@ -363,8 +363,21 @@ pub fn view<'a>(
         hotkey_row.into(),
         terminal_row.into(),
         user_settings_row.into(),
-        login_checkbox.into(),
     ];
+
+    // SMAppService only works when the binary is inside a signed .app
+    // bundle. Running from `cargo run` or a loose binary would otherwise
+    // let the user click a checkbox that aborts the process.
+    #[cfg(target_os = "macos")]
+    if crate::platform::macos::login_item_supported() {
+        body_items.push(login_checkbox.into());
+    } else {
+        let _ = login_checkbox; // suppress unused warning in dev builds
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = login_checkbox;
+    }
 
     let actions = row![
         button(text("Show Launcher").size(12).color(super::theme::TEXT))

@@ -1749,17 +1749,25 @@ impl Slashpad {
             }
 
             Message::LaunchAtLoginToggled(enabled) => {
-                self.settings.launch_at_login = enabled;
+                // Do the SMAppService call first so the persisted value
+                // tracks the actual login-item state. If registration
+                // fails (unsigned dev build, missing bundle, etc.) we
+                // leave the checkbox unchecked rather than silently
+                // claiming success.
+                #[cfg(target_os = "macos")]
+                let applied = {
+                    if enabled {
+                        crate::platform::macos::register_login_item()
+                    } else {
+                        crate::platform::macos::unregister_login_item()
+                    }
+                };
+                #[cfg(not(target_os = "macos"))]
+                let applied = enabled;
+
+                self.settings.launch_at_login = if enabled { applied } else { false };
                 if let Err(e) = self.settings.save() {
                     eprintln!("[slashpad] failed to save launchAtLogin: {e}");
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    if enabled {
-                        crate::platform::macos::register_login_item();
-                    } else {
-                        crate::platform::macos::unregister_login_item();
-                    }
                 }
                 Task::none()
             }
