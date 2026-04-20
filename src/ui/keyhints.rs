@@ -172,6 +172,17 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         hints.push(("⌘K", "Actions"));
     }
 
+    // Reorder affordance: swap the pinned row's position within the
+    // pinned block. Only surfaced when the currently-selected idle row
+    // is pinned — the shortcut is a no-op otherwise.
+    if matches!(mode, Mode::Idle)
+        && ctx.selection_active
+        && ctx.has_rows
+        && ctx.selected_is_pinned
+    {
+        hints.push(("⌘⇧↑↓", "Reorder"));
+    }
+
     // Left cluster: `esc`, `⌘⇧P`, and `ctrl c` render flush-left in
     // that fixed order (so `⌘⇧P` always sits immediately right of
     // `esc`, regardless of each mode's original vec ordering).

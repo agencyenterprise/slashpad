@@ -168,7 +168,14 @@ pub fn new_pin_tag() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    format!("pinned:{millis}")
+    pin_tag_with(millis)
+}
+
+/// Build a pin tag with a specific unix-millis timestamp. Used when
+/// reordering within the pinned block: two neighbors swap their
+/// timestamps so one slides above/below the other.
+pub fn pin_tag_with(timestamp_ms: i64) -> String {
+    format!("{TAG_PINNED_PREFIX}:{timestamp_ms}")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

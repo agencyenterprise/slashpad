@@ -188,8 +188,8 @@ use crate::settings::{AppSettings, PreferredTerminal};
 use crate::sidecar::{self, FollowUp, Payload, SidecarEvent, SpawnedSidecar};
 use crate::skills;
 use crate::state::{
-    is_archived, is_pinned, new_pin_tag, pin_timestamp, ChatId, ChatMessageView, ChatState,
-    ChatStatus, Mode, Pin, SessionInfo, Skill, TAG_ARCHIVED,
+    is_archived, is_pinned, new_pin_tag, pin_tag_with, pin_timestamp, ChatId, ChatMessageView,
+    ChatState, ChatStatus, Mode, Pin, SessionInfo, Skill, TAG_ARCHIVED,
 };
 use crate::ui;
 
@@ -477,6 +477,16 @@ pub enum Message {
     /// ↵ while the options menu is open with Pin highlighted — toggle
     /// the pinned tag on the selected row's session.
     TogglePinSelectedRow,
+    /// ⌘⇧↑ in Idle when the selected row is pinned — slide the pin up
+    /// one slot within the pinned block by swapping timestamps with
+    /// the pinned neighbor above it. No-op when not pinned or already
+    /// at the top of the pinned block.
+    MovePinnedUp,
+    /// ⌘⇧↓ in Idle when the selected row is pinned — slide the pin
+    /// down one slot within the pinned block by swapping timestamps
+    /// with the pinned neighbor below it. No-op when not pinned or
+    /// already at the bottom of the pinned block.
+    MovePinnedDown,
     /// Async result from `sessions::tag_session`. `Ok` triggers a
     /// refresh of the session list; `Err` restores the row.
     SessionTagged(Result<(), String>),
@@ -789,10 +799,19 @@ impl Slashpad {
             // Status::Ignored for them), so on_key_press is fine here.
             // Enter is handled in listen_with below so Cmd+Enter can
             // dispatch FireAndForgetSubmit without racing on_submit.
-            iced::keyboard::on_key_press(|key, _modifiers| match key.as_ref() {
-                Key::Named(Named::ArrowUp) => Some(Message::NavUp),
-                Key::Named(Named::ArrowDown) => Some(Message::NavDown),
-                _ => None,
+            //
+            // `Cmd+Shift+Arrow` is reserved for pinned-row reordering
+            // (see `decode_shortcut`); let it fall through to
+            // `listen_with` so Nav doesn't also fire.
+            iced::keyboard::on_key_press(|key, modifiers| {
+                if modifiers.command() && modifiers.shift() {
+                    return None;
+                }
+                match key.as_ref() {
+                    Key::Named(Named::ArrowUp) => Some(Message::NavUp),
+                    Key::Named(Named::ArrowDown) => Some(Message::NavDown),
+                    _ => None,
+                }
             }),
             // Shortcut detection + window events. `listen_with` (not
             // `on_key_press`) because iced's focused `text_input` returns
@@ -901,6 +920,19 @@ impl Slashpad {
         }
         if modifiers.control() && matches!(key.as_ref(), Key::Character("c")) {
             return Some(Message::CancelGeneration);
+        }
+
+        // Cmd+Shift+Arrow reorders pinned rows within the pinned block.
+        // Checked before the Cmd+letter arms since arrows are Named, not
+        // Character — routing is unambiguous either way, but keeping
+        // these up here makes the intent obvious.
+        if modifiers.command() && modifiers.shift() {
+            if matches!(key.as_ref(), Key::Named(Named::ArrowUp)) {
+                return Some(Message::MovePinnedUp);
+            }
+            if matches!(key.as_ref(), Key::Named(Named::ArrowDown)) {
+                return Some(Message::MovePinnedDown);
+            }
         }
 
         // Cmd+letter shortcuts. `ShortcutFilter` prevents the letter
@@ -2046,6 +2078,9 @@ impl Slashpad {
                 )
             }
 
+            Message::MovePinnedUp => self.move_pinned_row(-1),
+            Message::MovePinnedDown => self.move_pinned_row(1),
+
             Message::SessionTagged(result) => {
                 match result {
                     Ok(()) => {
@@ -2937,6 +2972,151 @@ impl Slashpad {
                 .find(|s| s.session_id == session_id)
                 .and_then(|s| s.tag.as_deref()),
         )
+    }
+
+    /// Move the selected idle-list row up (direction=-1) or down
+    /// (direction=+1) within the pinned block by swapping pin
+    /// timestamps with the pinned neighbor in that direction.
+    ///
+    /// Since pinned-block order is determined by the unix-millis
+    /// timestamp embedded in the `pinned:<ts>` tag (ascending = top
+    /// to bottom), swapping two neighbors' timestamps is equivalent
+    /// to swapping their display positions — no other pins are
+    /// affected. The update is applied optimistically to
+    /// `recent_sessions` and persisted via two `tag_session` calls;
+    /// the follow-up refresh reconciles against the SDK.
+    fn move_pinned_row(&mut self, direction: i32) -> Task<Message> {
+        if self.mode != Mode::Idle
+            || !self.idle_selection_active
+            || self.input.starts_with('/')
+            || self.session_menu_open
+        {
+            return Task::none();
+        }
+
+        let rows = self.build_idle_rows();
+        let Some(selected_row) = rows.get(self.selected_idle_index).cloned() else {
+            return Task::none();
+        };
+        let selected_sid = match &selected_row {
+            IdleRowSelection::Active(chat_id) => self
+                .chats
+                .get(chat_id)
+                .and_then(|e| e.state.session_id.clone()),
+            IdleRowSelection::Past(info) => Some(info.session_id.clone()),
+        };
+        let Some(selected_sid) = selected_sid else {
+            return Task::none();
+        };
+        if !self.session_is_pinned(&selected_sid) {
+            return Task::none();
+        }
+
+        // The pinned block is the contiguous prefix of `rows` — walk
+        // until we hit the first unpinned row. Each pinned row keeps
+        // its unified-list index so the selection can follow the
+        // moved row to its new position.
+        let mut pinned_rows: Vec<(usize, String)> = Vec::new();
+        for (i, r) in rows.iter().enumerate() {
+            let sid = match r {
+                IdleRowSelection::Active(chat_id) => self
+                    .chats
+                    .get(chat_id)
+                    .and_then(|e| e.state.session_id.clone()),
+                IdleRowSelection::Past(info) => Some(info.session_id.clone()),
+            };
+            let Some(sid) = sid else { break };
+            if !self.session_is_pinned(&sid) {
+                break;
+            }
+            pinned_rows.push((i, sid));
+        }
+
+        let Some(my_pos) = pinned_rows.iter().position(|(_, s)| s == &selected_sid) else {
+            return Task::none();
+        };
+        let target = my_pos as i32 + direction;
+        if target < 0 || target >= pinned_rows.len() as i32 {
+            return Task::none();
+        }
+        let (neighbor_row_idx, neighbor_sid) = pinned_rows[target as usize].clone();
+
+        let my_ts = self.session_pin_timestamp(&selected_sid).unwrap_or(0);
+        let neighbor_ts = self.session_pin_timestamp(&neighbor_sid).unwrap_or(0);
+        if my_ts == neighbor_ts {
+            // Two pins with identical timestamps (e.g. both legacy
+            // bare `pinned` tags sharing ts=0) would swap into a
+            // no-op. Give the moved row a ±1ms offset to force an
+            // observable reorder.
+            let bumped = match direction {
+                d if d < 0 => neighbor_ts.saturating_sub(1),
+                _ => neighbor_ts.saturating_add(1),
+            };
+            let new_tag = pin_tag_with(bumped);
+            if let Some(info) = self
+                .recent_sessions
+                .iter_mut()
+                .find(|s| s.session_id == selected_sid)
+            {
+                info.tag = Some(new_tag.clone());
+            }
+            self.selected_idle_index = neighbor_row_idx;
+            let cwd = self.project_path.clone();
+            let sid = selected_sid.clone();
+            return Task::batch([
+                snap_to_selection(
+                    IDLE_LIST_SCROLL_ID.clone(),
+                    self.selected_idle_index,
+                    self.idle_row_count(),
+                ),
+                Task::perform(
+                    async move {
+                        crate::sessions::tag_session(&cwd, &sid, Some(&new_tag))
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    Message::SessionTagged,
+                ),
+            ]);
+        }
+
+        let my_new_tag = pin_tag_with(neighbor_ts);
+        let neighbor_new_tag = pin_tag_with(my_ts);
+
+        for info in self.recent_sessions.iter_mut() {
+            if info.session_id == selected_sid {
+                info.tag = Some(my_new_tag.clone());
+            } else if info.session_id == neighbor_sid {
+                info.tag = Some(neighbor_new_tag.clone());
+            }
+        }
+
+        self.selected_idle_index = neighbor_row_idx;
+
+        let cwd = self.project_path.clone();
+        let sid1 = selected_sid.clone();
+        let tag1 = my_new_tag.clone();
+        let sid2 = neighbor_sid.clone();
+        let tag2 = neighbor_new_tag.clone();
+        Task::batch([
+            snap_to_selection(
+                IDLE_LIST_SCROLL_ID.clone(),
+                self.selected_idle_index,
+                self.idle_row_count(),
+            ),
+            Task::perform(
+                async move {
+                    let r1 = crate::sessions::tag_session(&cwd, &sid1, Some(&tag1))
+                        .await
+                        .map_err(|e| e.to_string());
+                    let r2 = crate::sessions::tag_session(&cwd, &sid2, Some(&tag2))
+                        .await
+                        .map_err(|e| e.to_string());
+                    r1.and(r2)
+                },
+                Message::SessionTagged,
+            ),
+        ])
     }
 
     /// The current fuzzy-filter query for the idle list. Empty string
