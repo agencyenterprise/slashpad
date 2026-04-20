@@ -61,6 +61,11 @@ pub struct KeyhintContext {
     /// True when the currently-selected row's session is tagged pinned.
     /// Flips the Pin/Unpin hint label while the menu is open.
     pub selected_is_pinned: bool,
+    /// Number of pinned items in the currently-rendered list for the
+    /// active mode (idle rows / filtered skills / filtered projects).
+    /// Reorder is a no-op with fewer than two pinned entries, so the
+    /// hint is suppressed below that threshold.
+    pub pinned_count: usize,
 }
 
 /// Fixed footer height reserved for the keyhints bar, used by
@@ -158,25 +163,28 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         hints.push(("⌘⇧P", label));
     }
 
-    // Actions submenu affordance: only meaningful in Idle when a row is
-    // selected and has a session id to tag. Hidden otherwise to avoid
-    // advertising a shortcut that would be a no-op.
-    if matches!(mode, Mode::Idle)
-        && ctx.selection_active
-        && ctx.has_rows
-        && ctx.can_open_options
-    {
+    // Actions submenu affordance: available in the three modes that
+    // support pin/archive actions (Idle → sessions, Skills, ProjectPicker).
+    // Hidden otherwise to avoid advertising a shortcut that would be a no-op.
+    let in_actionable_mode = matches!(mode, Mode::Idle | Mode::Skills | Mode::ProjectPicker);
+    let actions_gated = match mode {
+        Mode::Idle => ctx.selection_active && ctx.has_rows && ctx.can_open_options,
+        Mode::Skills | Mode::ProjectPicker => ctx.can_open_options,
+        _ => false,
+    };
+    if in_actionable_mode && actions_gated {
         hints.push(("⌘K", "Actions"));
     }
 
     // Reorder affordance: swap the pinned row's position within the
-    // pinned block. Only surfaced when the currently-selected idle row
-    // is pinned — the shortcut is a no-op otherwise.
-    if matches!(mode, Mode::Idle)
-        && ctx.selection_active
-        && ctx.has_rows
-        && ctx.selected_is_pinned
-    {
+    // pinned block. Only surfaced when the currently-selected row is
+    // pinned — the shortcut is a no-op otherwise.
+    let reorder_gated = match mode {
+        Mode::Idle => ctx.selection_active && ctx.has_rows && ctx.selected_is_pinned,
+        Mode::Skills | Mode::ProjectPicker => ctx.selected_is_pinned,
+        _ => false,
+    };
+    if reorder_gated && ctx.pinned_count >= 2 {
         hints.push(("⌘⇧↑↓", "Reorder"));
     }
 

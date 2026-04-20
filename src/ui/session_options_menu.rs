@@ -1,6 +1,6 @@
-//! Floating options menu for a selected idle-list row. Mounted as an
-//! overlay via `iced::widget::stack` above the palette body when
-//! `session_menu_open` is true.
+//! Floating options menu for a selected idle-list / skill / project row.
+//! Mounted as an overlay via `iced::widget::stack` above the palette body
+//! when `session_menu_open` is true.
 //!
 //! The menu positions itself bottom-left of the palette, hovering just
 //! above the keyhints bar near the `⌘K Actions` hint. Keyboard-driven:
@@ -25,36 +25,73 @@ const ABOVE_BAR_GAP: f32 = 8.0;
 /// which lives in the flush-right cluster of the keyhints bar.
 const RIGHT_INSET: f32 = 12.0;
 
+/// What kind of list row the menu is acting on. Drives row labels and
+/// which actions are rendered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuTarget {
+    Session,
+    Skill,
+    Project,
+}
+
+impl MenuTarget {
+    /// Number of rows in the menu for this target. Used by the caller
+    /// to clamp `session_menu_selected` when arrow-navigating.
+    pub fn row_count(self) -> usize {
+        match self {
+            MenuTarget::Session => 2, // Pin + Archive
+            MenuTarget::Skill | MenuTarget::Project => 1, // Pin only
+        }
+    }
+
+    fn pin_label(self, is_pinned: bool) -> &'static str {
+        match (self, is_pinned) {
+            (MenuTarget::Session, false) => "Pin session",
+            (MenuTarget::Session, true) => "Unpin session",
+            (MenuTarget::Skill, false) => "Pin skill",
+            (MenuTarget::Skill, true) => "Unpin skill",
+            (MenuTarget::Project, false) => "Pin project",
+            (MenuTarget::Project, true) => "Unpin project",
+        }
+    }
+}
+
 /// Render the options menu as a full-size overlay layer. Intended to be
 /// placed as the second child of an `iced::widget::stack` where the
 /// first child is the ordinary palette body.
 ///
-/// `can_act` is false when the selected row has no `session_id` yet —
-/// every action needs a session id to tag, so rows are disabled.
-/// `menu_selected` is the index of the highlighted menu row
-/// (0 = Pin/Unpin, 1 = Archive). `is_pinned` swaps the top row's
-/// label between "Pin session" and "Unpin session".
-pub fn view(menu_selected: usize, can_act: bool, is_pinned: bool) -> Element<'static, Message> {
+/// `can_act` is false when the target row can't actually be acted on
+/// (e.g. a session row without a `session_id` yet). `menu_selected` is
+/// the index of the highlighted menu row. `is_pinned` swaps the top
+/// row's label between Pin and Unpin variants.
+pub fn view(
+    target: MenuTarget,
+    menu_selected: usize,
+    can_act: bool,
+    is_pinned: bool,
+) -> Element<'static, Message> {
     let header: Element<'static, Message> = text("Actions")
         .size(10)
         .color(theme::MUTED)
         .into();
 
-    let pin_label = if is_pinned { "Unpin session" } else { "Pin session" };
     let pin = menu_row(
-        pin_label,
+        target.pin_label(is_pinned),
         menu_selected == 0,
         can_act,
         Message::TogglePinSelectedRow,
     );
-    let archive = menu_row(
-        "Archive session",
-        menu_selected == 1,
-        can_act,
-        Message::ArchiveSelectedRow,
-    );
 
-    let body: Column<'static, Message> = column![header, pin, archive].spacing(6);
+    let mut body: Column<'static, Message> = column![header, pin].spacing(6);
+    if matches!(target, MenuTarget::Session) {
+        let archive = menu_row(
+            "Archive session",
+            menu_selected == 1,
+            can_act,
+            Message::ArchiveSelectedRow,
+        );
+        body = body.push(archive);
+    }
 
     let panel: Element<'static, Message> = container(body)
         .padding([8, 10])

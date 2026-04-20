@@ -6,12 +6,21 @@ use iced::{Element, Length};
 use crate::app::Message;
 use crate::state::Skill;
 
-pub fn view(
-    skills: &[Skill],
+/// A skill together with its pinned flag, as computed by the app before
+/// rendering. Pinned skills float to the top of the filtered list and
+/// render their name in the accent color; unpinned skills render in
+/// the default text color.
+pub struct SkillRow<'a> {
+    pub skill: &'a Skill,
+    pub pinned: bool,
+}
+
+pub fn view<'a>(
+    rows: Vec<SkillRow<'a>>,
     selected: usize,
     scroll_id: scrollable::Id,
-) -> Element<'_, Message> {
-    if skills.is_empty() {
+) -> Element<'a, Message> {
+    if rows.is_empty() {
         return container(text("No matching skills").size(13).color(super::theme::MUTED))
             .padding(16)
             .width(Length::Fill)
@@ -20,27 +29,37 @@ pub fn view(
             .into();
     }
 
-    let mut col: Column<'_, Message> = Column::new();
-    let last = skills.len().saturating_sub(1);
-    for (i, skill) in skills.iter().enumerate() {
+    let mut col: Column<'a, Message> = Column::new();
+    let last = rows.len().saturating_sub(1);
+    for (i, skill_row) in rows.into_iter().enumerate() {
         let is_selected = i == selected;
         let is_first = i == 0;
         let is_last = i == last;
-        let row = row![
+        let skill = skill_row.skill;
+        let name_color = if skill_row.pinned {
+            super::theme::ACCENT
+        } else {
+            super::theme::TEXT
+        };
+        let description_cell: Element<'_, Message> = text(truncate(&skill.description, 180))
+            .size(12)
+            .color(super::theme::MUTED)
+            .height(Length::Fixed(32.0))
+            .wrapping(iced::widget::text::Wrapping::Word)
+            .width(Length::Fill)
+            .into();
+
+        let row_inner = row![
             text(format!("/{}", skill.name))
                 .size(13)
-                .color(super::theme::ACCENT)
+                .color(name_color)
                 .width(Length::Fixed(120.0)),
-            text(truncate(&skill.description, 180))
-                .size(12)
-                .color(super::theme::MUTED)
-                .height(Length::Fixed(32.0))
-                .wrapping(iced::widget::text::Wrapping::Word),
+            description_cell,
         ]
         .spacing(12)
         .align_y(iced::Alignment::Center);
 
-        let row_container = container(row)
+        let row_container = container(row_inner)
             .padding([10, 18])
             .width(Length::Fill)
             .style(move |_theme: &iced::Theme| iced::widget::container::Style {

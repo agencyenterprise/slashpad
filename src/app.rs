@@ -33,9 +33,29 @@ static PROJECT_PICKER_SCROLL_ID: LazyLock<scrollable::Id> =
 static CHAT_SCROLL_ID: LazyLock<scrollable::Id> =
     LazyLock::new(scrollable::Id::unique);
 
-/// Number of rows in the ⌘K actions menu. Pin/Unpin at index 0,
-/// Archive at index 1. Used for arrow-key bounds checking.
-pub const SESSION_MENU_ROW_COUNT: usize = 2;
+/// Current wall-clock time as unix millis. Used as the pin timestamp
+/// on skill/project pin toggles — same ordering semantics as
+/// `state::new_pin_tag` (oldest pin sorts first within the pinned
+/// block).
+fn now_unix_millis() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Resolve the current ⌘K menu target from `self.mode`. The menu is
+/// keyboard-navigable across Idle (sessions), Skills, and ProjectPicker
+/// modes; row counts and labels differ per target.
+fn menu_target_for_mode(mode: Mode) -> Option<ui::session_options_menu::MenuTarget> {
+    match mode {
+        Mode::Idle => Some(ui::session_options_menu::MenuTarget::Session),
+        Mode::Skills => Some(ui::session_options_menu::MenuTarget::Skill),
+        Mode::ProjectPicker => Some(ui::session_options_menu::MenuTarget::Project),
+        _ => None,
+    }
+}
 
 /// Snap a scrollable so the row at `index` (in a list of `count`) is visible.
 /// Uses a fractional offset: index 0 -> top, last index -> bottom.
@@ -1010,6 +1030,7 @@ impl Slashpad {
                     } else {
                         crate::fuzzy::filter_projects(&self.all_projects, &self.input)
                     };
+                    self.apply_pinned_project_sort();
                     let max = self.filtered_projects.len().saturating_sub(1);
                     if self.selected_project_index > max {
                         self.selected_project_index = 0;
@@ -1031,6 +1052,7 @@ impl Slashpad {
                     } else {
                         crate::fuzzy::filter_skills(&self.all_skills, query)
                     };
+                    self.apply_pinned_skill_sort();
                     self.mode = Mode::Skills;
                     self.selected_skill_index = 0;
                 } else {
@@ -1251,7 +1273,10 @@ impl Slashpad {
 
             Message::NavDown => {
                 if self.session_menu_open {
-                    if self.session_menu_selected < SESSION_MENU_ROW_COUNT - 1 {
+                    let max = menu_target_for_mode(self.mode)
+                        .map(|t| t.row_count().saturating_sub(1))
+                        .unwrap_or(0);
+                    if self.session_menu_selected < max {
                         self.session_menu_selected += 1;
                     }
                     return Task::none();
@@ -1364,6 +1389,7 @@ impl Slashpad {
                     } else {
                         crate::fuzzy::filter_projects(&self.all_projects, &self.input)
                     };
+                    self.apply_pinned_project_sort();
                     self.selected_project_index = 0;
                 }
                 Task::none()
@@ -1470,6 +1496,7 @@ impl Slashpad {
                 }
                 self.input_before_picker = Some(std::mem::take(&mut self.input));
                 self.filtered_projects = self.all_projects.clone();
+                self.apply_pinned_project_sort();
                 self.selected_project_index = 0;
                 self.mode = Mode::ProjectPicker;
                 // `ShortcutFilter` drops the Cmd+P event before
@@ -1735,6 +1762,7 @@ impl Slashpad {
                 } else {
                     self.all_skills.clone()
                 };
+                self.apply_pinned_skill_sort();
                 self.selected_skill_index = 0;
                 Task::none()
             }
@@ -1907,24 +1935,33 @@ impl Slashpad {
             }
 
             Message::ToggleSessionMenu => {
-                // Only meaningful in Idle with a live row selection.
-                // Ignores the chord everywhere else so it feels dead
-                // rather than doing something surprising.
+                // The ⌘K menu opens in three modes: Idle (sessions),
+                // Skills (skill pins), ProjectPicker (project pins).
+                // Ignores the chord elsewhere so it feels dead rather
+                // than surprising.
                 if self.session_menu_open {
                     self.session_menu_open = false;
                     self.session_menu_selected = 0;
                     return Task::none();
                 }
-                if self.mode != Mode::Idle
-                    || self.input.starts_with('/')
-                    || self.idle_row_count() == 0
-                    || !self.idle_selection_active
-                {
-                    return Task::none();
-                }
-                // Every action needs a session_id to tag, so gate the
-                // whole menu on the selected row having one.
-                if self.selected_row_session_id().is_none() {
+                let can_open = match self.mode {
+                    Mode::Idle => {
+                        !self.input.starts_with('/')
+                            && self.idle_row_count() > 0
+                            && self.idle_selection_active
+                            && self.selected_row_session_id().is_some()
+                    }
+                    Mode::Skills => {
+                        !self.filtered_skills.is_empty()
+                            && self.selected_skill_index < self.filtered_skills.len()
+                    }
+                    Mode::ProjectPicker => {
+                        !self.filtered_projects.is_empty()
+                            && self.selected_project_index < self.filtered_projects.len()
+                    }
+                    _ => false,
+                };
+                if !can_open {
                     return Task::none();
                 }
                 self.session_menu_open = true;
@@ -2007,6 +2044,15 @@ impl Slashpad {
             }
 
             Message::TogglePinSelectedRow => {
+                // Skills / ProjectPicker fork off to their own local
+                // pin-toggle paths; only Idle goes through the SDK
+                // `tag_session` round-trip below.
+                if self.mode == Mode::Skills {
+                    return self.toggle_pin_selected_skill();
+                }
+                if self.mode == Mode::ProjectPicker {
+                    return self.toggle_pin_selected_project();
+                }
                 let rows = self.build_idle_rows();
                 let selected = rows.get(self.selected_idle_index).cloned();
                 let Some(row) = selected else {
@@ -2078,8 +2124,16 @@ impl Slashpad {
                 )
             }
 
-            Message::MovePinnedUp => self.move_pinned_row(-1),
-            Message::MovePinnedDown => self.move_pinned_row(1),
+            Message::MovePinnedUp => match self.mode {
+                Mode::Skills => self.move_pinned_skill_row(-1),
+                Mode::ProjectPicker => self.move_pinned_project_row(-1),
+                _ => self.move_pinned_row(-1),
+            },
+            Message::MovePinnedDown => match self.mode {
+                Mode::Skills => self.move_pinned_skill_row(1),
+                Mode::ProjectPicker => self.move_pinned_project_row(1),
+                _ => self.move_pinned_row(1),
+            },
 
             Message::SessionTagged(result) => {
                 match result {
@@ -2218,8 +2272,16 @@ impl Slashpad {
                 // the user starts typing a natural-language argument.
                 if self.locked_skill().is_none() {
                     body = body.push(ui::theme::divider());
+                    let skill_rows: Vec<ui::skill_list::SkillRow<'_>> = self
+                        .filtered_skills
+                        .iter()
+                        .map(|s| ui::skill_list::SkillRow {
+                            skill: s,
+                            pinned: self.skill_is_pinned(&s.name),
+                        })
+                        .collect();
                     body = body.push(ui::skill_list::view(
-                        &self.filtered_skills,
+                        skill_rows,
                         self.selected_skill_index,
                         SKILL_LIST_SCROLL_ID.clone(),
                     ));
@@ -2228,8 +2290,17 @@ impl Slashpad {
             }
             Mode::ProjectPicker => {
                 body = body.push(ui::theme::divider());
+                let project_rows: Vec<ui::project_picker::ProjectRow<'_>> = self
+                    .filtered_projects
+                    .iter()
+                    .map(|p| ui::project_picker::ProjectRow {
+                        project: p,
+                        pinned: self
+                            .project_is_pinned(p.path.to_string_lossy().as_ref()),
+                    })
+                    .collect();
                 body = body.push(ui::project_picker::view(
-                    &self.filtered_projects,
+                    project_rows,
                     self.selected_project_index,
                     PROJECT_PICKER_SCROLL_ID.clone(),
                 ));
@@ -2323,11 +2394,57 @@ impl Slashpad {
         }
 
         body = body.push(ui::theme::divider());
-        let can_open_options = self.mode == Mode::Idle
-            && !self.input.starts_with('/')
-            && self.idle_selection_active
-            && self.idle_row_count() > 0
-            && self.selected_row_session_id().is_some();
+        let can_open_options = match self.mode {
+            Mode::Idle => {
+                !self.input.starts_with('/')
+                    && self.idle_selection_active
+                    && self.idle_row_count() > 0
+                    && self.selected_row_session_id().is_some()
+            }
+            Mode::Skills => !self.filtered_skills.is_empty(),
+            Mode::ProjectPicker => !self.filtered_projects.is_empty(),
+            _ => false,
+        };
+        let selected_is_pinned = match self.mode {
+            Mode::Idle => self.selected_row_is_pinned(),
+            Mode::Skills => self
+                .filtered_skills
+                .get(self.selected_skill_index)
+                .map(|s| self.skill_is_pinned(&s.name))
+                .unwrap_or(false),
+            Mode::ProjectPicker => self
+                .filtered_projects
+                .get(self.selected_project_index)
+                .map(|p| self.project_is_pinned(p.path.to_string_lossy().as_ref()))
+                .unwrap_or(false),
+            _ => false,
+        };
+        let pinned_count = match self.mode {
+            Mode::Idle => self
+                .build_idle_rows()
+                .iter()
+                .filter(|r| match r {
+                    IdleRowSelection::Active(id) => self
+                        .chats
+                        .get(id)
+                        .and_then(|e| e.state.session_id.as_deref())
+                        .map(|s| self.session_is_pinned(s))
+                        .unwrap_or(false),
+                    IdleRowSelection::Past(info) => is_pinned(info.tag.as_deref()),
+                })
+                .count(),
+            Mode::Skills => self
+                .filtered_skills
+                .iter()
+                .take_while(|s| self.skill_is_pinned(&s.name))
+                .count(),
+            Mode::ProjectPicker => self
+                .filtered_projects
+                .iter()
+                .take_while(|p| self.project_is_pinned(p.path.to_string_lossy().as_ref()))
+                .count(),
+            _ => 0,
+        };
         body = body.push(ui::keyhints::view(
             self.mode,
             ui::keyhints::KeyhintContext {
@@ -2350,7 +2467,8 @@ impl Slashpad {
                 session_menu_open: self.session_menu_open,
                 can_open_options,
                 session_menu_selected: self.session_menu_selected,
-                selected_is_pinned: self.selected_row_is_pinned(),
+                selected_is_pinned,
+                pinned_count,
             },
         ));
 
@@ -2363,10 +2481,37 @@ impl Slashpad {
         // Layer 1 is the menu when open, or a zero-size Space that
         // doesn't intercept clicks when closed.
         let overlay: Element<'_, Message> = if self.session_menu_open {
+            let target = menu_target_for_mode(self.mode)
+                .unwrap_or(ui::session_options_menu::MenuTarget::Session);
+            let (can_act, is_pinned) = match target {
+                ui::session_options_menu::MenuTarget::Session => (
+                    self.selected_row_session_id().is_some(),
+                    self.selected_row_is_pinned(),
+                ),
+                ui::session_options_menu::MenuTarget::Skill => {
+                    let pinned = self
+                        .filtered_skills
+                        .get(self.selected_skill_index)
+                        .map(|s| self.skill_is_pinned(&s.name))
+                        .unwrap_or(false);
+                    (true, pinned)
+                }
+                ui::session_options_menu::MenuTarget::Project => {
+                    let pinned = self
+                        .filtered_projects
+                        .get(self.selected_project_index)
+                        .map(|p| {
+                            self.project_is_pinned(p.path.to_string_lossy().as_ref())
+                        })
+                        .unwrap_or(false);
+                    (true, pinned)
+                }
+            };
             ui::session_options_menu::view(
+                target,
                 self.session_menu_selected,
-                self.selected_row_session_id().is_some(),
-                self.selected_row_is_pinned(),
+                can_act,
+                is_pinned,
             )
         } else {
             Space::new(iced::Length::Fixed(0.0), iced::Length::Fixed(0.0)).into()
@@ -2480,6 +2625,7 @@ impl Slashpad {
                     let query = format!("{} ", skill.name);
                     self.filtered_skills =
                         crate::fuzzy::filter_skills(&self.all_skills, &query);
+                    self.apply_pinned_skill_sort();
                     self.selected_skill_index = 0;
                     text_input::focus(INPUT_ID.clone())
                 } else {
@@ -2519,9 +2665,15 @@ impl Slashpad {
                 self.selected_idle_index = 0;
                 self.idle_selection_active = false;
                 // Past-sessions list is scoped per-cwd, so a project
-                // switch needs a re-fetch.
+                // switch needs a re-fetch. Also reset the idle scroll
+                // offset: iced retains scrollable position by id, so
+                // without this the new project's list would display
+                // mid-scrolled if the old one was scrolled down.
                 self.recent_sessions.clear();
-                self.refresh_sessions()
+                Task::batch([
+                    snap_to_selection(IDLE_LIST_SCROLL_ID.clone(), 0, self.idle_row_count()),
+                    self.refresh_sessions(),
+                ])
             }
             // In picker mode with no matches, Enter is a silent no-op
             // — don't fall through to "start chat with typed text".
@@ -3119,6 +3271,288 @@ impl Slashpad {
         ])
     }
 
+    /// True when the named skill is currently pinned by the user. Pin
+    /// state lives in `AppSettings::pinned_skills`.
+    fn skill_is_pinned(&self, name: &str) -> bool {
+        self.settings.pinned_skills.contains_key(name)
+    }
+
+    /// Pin timestamp for a skill, if pinned. Same ASC-ordering
+    /// semantics as `session_pin_timestamp`.
+    fn skill_pin_timestamp(&self, name: &str) -> Option<i64> {
+        self.settings.pinned_skills.get(name).copied()
+    }
+
+    /// True when the given absolute project path is pinned.
+    fn project_is_pinned(&self, path: &str) -> bool {
+        self.settings.pinned_projects.contains_key(path)
+    }
+
+    /// Pin timestamp for a project, if pinned.
+    fn project_pin_timestamp(&self, path: &str) -> Option<i64> {
+        self.settings.pinned_projects.get(path).copied()
+    }
+
+    /// Partition `filtered_skills` into pinned-first + rest, sorted
+    /// within the pinned block by pin timestamp ASC (oldest pin at
+    /// the top, newest pin just above the unpinned block). Mirrors
+    /// the behavior of `build_idle_rows` for session pins.
+    fn apply_pinned_skill_sort(&mut self) {
+        let mut pinned: Vec<(i64, Skill)> = Vec::with_capacity(self.filtered_skills.len());
+        let mut rest: Vec<Skill> = Vec::with_capacity(self.filtered_skills.len());
+        for skill in std::mem::take(&mut self.filtered_skills) {
+            match self.skill_pin_timestamp(&skill.name) {
+                Some(ts) => pinned.push((ts, skill)),
+                None => rest.push(skill),
+            }
+        }
+        pinned.sort_by_key(|(ts, _)| *ts);
+        let mut out: Vec<Skill> =
+            pinned.into_iter().map(|(_, s)| s).collect();
+        out.extend(rest);
+        self.filtered_skills = out;
+    }
+
+    /// Same partition/sort as `apply_pinned_skill_sort`, but against
+    /// `filtered_projects`. Also promotes the built-in `~/.slashpad`
+    /// project (flagged via `is_default`) to the top of the unpinned
+    /// block so it always sits flush with the pinned block above —
+    /// no other unpinned rows can slot between the last pin and the
+    /// default.
+    fn apply_pinned_project_sort(&mut self) {
+        let mut pinned: Vec<(i64, crate::projects::ProjectInfo)> =
+            Vec::with_capacity(self.filtered_projects.len());
+        let mut rest: Vec<crate::projects::ProjectInfo> =
+            Vec::with_capacity(self.filtered_projects.len());
+        for project in std::mem::take(&mut self.filtered_projects) {
+            let key = project.path.to_string_lossy().to_string();
+            match self.project_pin_timestamp(&key) {
+                Some(ts) => pinned.push((ts, project)),
+                None => rest.push(project),
+            }
+        }
+        pinned.sort_by_key(|(ts, _)| *ts);
+        // If the default lives in `rest`, promote it to position 0
+        // so it always anchors the unpinned block. If it's in
+        // `pinned`, leave it to sort normally by its pin timestamp.
+        if let Some(pos) = rest.iter().position(|p| p.is_default) {
+            if pos != 0 {
+                let default = rest.remove(pos);
+                rest.insert(0, default);
+            }
+        }
+        let mut out: Vec<crate::projects::ProjectInfo> =
+            pinned.into_iter().map(|(_, p)| p).collect();
+        out.extend(rest);
+        self.filtered_projects = out;
+    }
+
+    /// Toggle the pinned state of the currently-selected skill row.
+    /// Persists to `settings.json` and rebuilds `filtered_skills` so
+    /// the list re-sorts immediately.
+    fn toggle_pin_selected_skill(&mut self) -> Task<Message> {
+        let Some(skill) = self.filtered_skills.get(self.selected_skill_index).cloned() else {
+            self.session_menu_open = false;
+            self.session_menu_selected = 0;
+            return Task::none();
+        };
+        let was_pinned = self.skill_is_pinned(&skill.name);
+        if was_pinned {
+            self.settings.pinned_skills.remove(&skill.name);
+        } else {
+            self.settings
+                .pinned_skills
+                .insert(skill.name.clone(), now_unix_millis());
+        }
+        if let Err(e) = self.settings.save() {
+            eprintln!("[slashpad] failed to save pinned_skills: {e}");
+        }
+        self.apply_pinned_skill_sort();
+        // Track the skill across the reorder so the selection follows
+        // it to its new position — same UX as session pinning.
+        if let Some(new_idx) = self
+            .filtered_skills
+            .iter()
+            .position(|s| s.name == skill.name)
+        {
+            self.selected_skill_index = new_idx;
+        }
+        self.session_menu_open = false;
+        self.session_menu_selected = 0;
+        snap_to_selection(
+            SKILL_LIST_SCROLL_ID.clone(),
+            self.selected_skill_index,
+            self.filtered_skills.len(),
+        )
+    }
+
+    /// Toggle the pinned state of the currently-selected project row.
+    fn toggle_pin_selected_project(&mut self) -> Task<Message> {
+        let Some(project) = self.filtered_projects.get(self.selected_project_index).cloned()
+        else {
+            self.session_menu_open = false;
+            self.session_menu_selected = 0;
+            return Task::none();
+        };
+        let key = project.path.to_string_lossy().to_string();
+        let was_pinned = self.project_is_pinned(&key);
+        if was_pinned {
+            self.settings.pinned_projects.remove(&key);
+        } else {
+            self.settings
+                .pinned_projects
+                .insert(key.clone(), now_unix_millis());
+        }
+        if let Err(e) = self.settings.save() {
+            eprintln!("[slashpad] failed to save pinned_projects: {e}");
+        }
+        self.apply_pinned_project_sort();
+        if let Some(new_idx) = self
+            .filtered_projects
+            .iter()
+            .position(|p| p.path == project.path)
+        {
+            self.selected_project_index = new_idx;
+        }
+        self.session_menu_open = false;
+        self.session_menu_selected = 0;
+        snap_to_selection(
+            PROJECT_PICKER_SCROLL_ID.clone(),
+            self.selected_project_index,
+            self.filtered_projects.len(),
+        )
+    }
+
+    /// Reorder within the pinned skill block by swapping pin
+    /// timestamps with the neighbor in the given direction. Mirrors
+    /// the shape of `move_pinned_row` for sessions; the only
+    /// differences are the storage (settings map vs SDK tag) and the
+    /// persistence call (settings.save vs tag_session).
+    fn move_pinned_skill_row(&mut self, direction: i32) -> Task<Message> {
+        if self.mode != Mode::Skills
+            || self.session_menu_open
+            || self.filtered_skills.is_empty()
+        {
+            return Task::none();
+        }
+        let Some(selected) = self.filtered_skills.get(self.selected_skill_index).cloned()
+        else {
+            return Task::none();
+        };
+        if !self.skill_is_pinned(&selected.name) {
+            return Task::none();
+        }
+        // Contiguous pinned prefix of the filtered list.
+        let mut pinned_rows: Vec<(usize, String)> = Vec::new();
+        for (i, s) in self.filtered_skills.iter().enumerate() {
+            if !self.skill_is_pinned(&s.name) {
+                break;
+            }
+            pinned_rows.push((i, s.name.clone()));
+        }
+        let Some(my_pos) = pinned_rows.iter().position(|(_, n)| n == &selected.name) else {
+            return Task::none();
+        };
+        let target = my_pos as i32 + direction;
+        if target < 0 || target >= pinned_rows.len() as i32 {
+            return Task::none();
+        }
+        let (neighbor_row_idx, neighbor_name) = pinned_rows[target as usize].clone();
+
+        let my_ts = self.skill_pin_timestamp(&selected.name).unwrap_or(0);
+        let neighbor_ts = self.skill_pin_timestamp(&neighbor_name).unwrap_or(0);
+        if my_ts == neighbor_ts {
+            let bumped = match direction {
+                d if d < 0 => neighbor_ts.saturating_sub(1),
+                _ => neighbor_ts.saturating_add(1),
+            };
+            self.settings
+                .pinned_skills
+                .insert(selected.name.clone(), bumped);
+        } else {
+            self.settings
+                .pinned_skills
+                .insert(selected.name.clone(), neighbor_ts);
+            self.settings
+                .pinned_skills
+                .insert(neighbor_name.clone(), my_ts);
+        }
+        if let Err(e) = self.settings.save() {
+            eprintln!("[slashpad] failed to save pinned_skills: {e}");
+        }
+        self.apply_pinned_skill_sort();
+        self.selected_skill_index = neighbor_row_idx;
+        snap_to_selection(
+            SKILL_LIST_SCROLL_ID.clone(),
+            self.selected_skill_index,
+            self.filtered_skills.len(),
+        )
+    }
+
+    /// Reorder within the pinned project block. Same semantics as
+    /// `move_pinned_skill_row`.
+    fn move_pinned_project_row(&mut self, direction: i32) -> Task<Message> {
+        if self.mode != Mode::ProjectPicker
+            || self.session_menu_open
+            || self.filtered_projects.is_empty()
+        {
+            return Task::none();
+        }
+        let Some(selected) = self.filtered_projects.get(self.selected_project_index).cloned()
+        else {
+            return Task::none();
+        };
+        let selected_key = selected.path.to_string_lossy().to_string();
+        if !self.project_is_pinned(&selected_key) {
+            return Task::none();
+        }
+        let mut pinned_rows: Vec<(usize, String)> = Vec::new();
+        for (i, p) in self.filtered_projects.iter().enumerate() {
+            let key = p.path.to_string_lossy().to_string();
+            if !self.project_is_pinned(&key) {
+                break;
+            }
+            pinned_rows.push((i, key));
+        }
+        let Some(my_pos) = pinned_rows.iter().position(|(_, k)| k == &selected_key) else {
+            return Task::none();
+        };
+        let target = my_pos as i32 + direction;
+        if target < 0 || target >= pinned_rows.len() as i32 {
+            return Task::none();
+        }
+        let (neighbor_row_idx, neighbor_key) = pinned_rows[target as usize].clone();
+
+        let my_ts = self.project_pin_timestamp(&selected_key).unwrap_or(0);
+        let neighbor_ts = self.project_pin_timestamp(&neighbor_key).unwrap_or(0);
+        if my_ts == neighbor_ts {
+            let bumped = match direction {
+                d if d < 0 => neighbor_ts.saturating_sub(1),
+                _ => neighbor_ts.saturating_add(1),
+            };
+            self.settings
+                .pinned_projects
+                .insert(selected_key.clone(), bumped);
+        } else {
+            self.settings
+                .pinned_projects
+                .insert(selected_key.clone(), neighbor_ts);
+            self.settings
+                .pinned_projects
+                .insert(neighbor_key.clone(), my_ts);
+        }
+        if let Err(e) = self.settings.save() {
+            eprintln!("[slashpad] failed to save pinned_projects: {e}");
+        }
+        self.apply_pinned_project_sort();
+        self.selected_project_index = neighbor_row_idx;
+        snap_to_selection(
+            PROJECT_PICKER_SCROLL_ID.clone(),
+            self.selected_project_index,
+            self.filtered_projects.len(),
+        )
+    }
+
     /// The current fuzzy-filter query for the idle list. Empty string
     /// when the input is empty, `/`-prefixed (skills mode), or we're
     /// not in Idle. Callers pass this into `filter_sessions` and the
@@ -3293,6 +3727,7 @@ impl Slashpad {
             self.mode = Mode::Skills;
             self.input = "/".to_string();
             self.filtered_skills = self.all_skills.clone();
+            self.apply_pinned_skill_sort();
             self.selected_skill_index = 0;
         }
         // Never clear `self.chats` or `self.active_chat_id` — those

@@ -1,5 +1,6 @@
 //! Persistent settings stored at `~/.slashpad/settings.json`.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -152,6 +153,30 @@ pub struct AppSettings {
     /// applicable to `.app` installs (Homebrew uses `brew services`).
     #[serde(default, rename = "launchAtLogin")]
     pub launch_at_login: bool,
+    /// User-pinned skills, keyed by skill name. Value is the unix-millis
+    /// timestamp of the pin, so ordering within the pinned block mirrors
+    /// session pinning (oldest pin first, newest pin at the bottom).
+    /// Global — not scoped per-project.
+    #[serde(default, rename = "pinnedSkills")]
+    pub pinned_skills: BTreeMap<String, i64>,
+    /// User-pinned projects, keyed by the decoded absolute path string.
+    /// Value semantics match `pinned_skills`. Global — applies across
+    /// every ProjectPicker rendering.
+    #[serde(default, rename = "pinnedProjects")]
+    pub pinned_projects: BTreeMap<String, i64>,
+    /// Set to true after the built-in `~/.slashpad` pin has been
+    /// seeded into `pinned_projects` on first run. Keeps a user who
+    /// explicitly unpins the default from having it re-added on the
+    /// next launch. Defaults to false so existing installs (which
+    /// never had this flag) still get the seed applied once.
+    #[serde(default, rename = "seededDefaultProjectPin")]
+    pub seeded_default_project_pin: bool,
+    /// Set to true after the bundled `skill-creator` skill has been
+    /// seeded into `pinned_skills` on first run. Same rationale as
+    /// `seeded_default_project_pin` — an explicit unpin by the user
+    /// is preserved across relaunches.
+    #[serde(default, rename = "seededDefaultSkillPin")]
+    pub seeded_default_skill_pin: bool,
 }
 
 fn default_hotkey() -> String {
@@ -171,6 +196,10 @@ impl Default for AppSettings {
             load_user_settings: false,
             selected_project_path: None,
             launch_at_login: false,
+            pinned_skills: BTreeMap::new(),
+            pinned_projects: BTreeMap::new(),
+            seeded_default_project_pin: false,
+            seeded_default_skill_pin: false,
         }
     }
 }
@@ -220,6 +249,46 @@ impl AppSettings {
             settings.preferred_terminal = PreferredTerminal::detect();
             if let Err(e) = settings.save() {
                 eprintln!("[slashpad] failed to persist detected terminal: {e}");
+            }
+        }
+
+        // Seed the built-in `~/.slashpad` project as pinned exactly
+        // once per install. Gated by `seeded_default_project_pin`
+        // (not by the presence of the `pinnedProjects` key) so an
+        // earlier version that wrote an empty map still gets the
+        // seed — and so a later explicit unpin by the user isn't
+        // silently reverted on the next launch.
+        if !settings.seeded_default_project_pin {
+            if let Ok(home) = std::env::var("HOME") {
+                let default_project = format!("{}/.slashpad", home);
+                settings.pinned_projects.insert(
+                    default_project,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0),
+                );
+            }
+            settings.seeded_default_project_pin = true;
+            if let Err(e) = settings.save() {
+                eprintln!("[slashpad] failed to seed default project pin: {e}");
+            }
+        }
+
+        // Seed the bundled `skill-creator` skill as pinned exactly
+        // once per install. Same gating rationale as the default
+        // project pin above.
+        if !settings.seeded_default_skill_pin {
+            settings.pinned_skills.insert(
+                "skill-creator".to_string(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+            );
+            settings.seeded_default_skill_pin = true;
+            if let Err(e) = settings.save() {
+                eprintln!("[slashpad] failed to seed default skill pin: {e}");
             }
         }
 

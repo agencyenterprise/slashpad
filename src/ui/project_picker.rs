@@ -9,12 +9,20 @@ use iced::{Element, Length};
 use crate::app::Message;
 use crate::projects::ProjectInfo;
 
-pub fn view(
-    projects: &[ProjectInfo],
+/// A project plus its pinned flag. Pinned projects float to the top
+/// and render their path in ACCENT — same visual language as pinned
+/// sessions in the idle list.
+pub struct ProjectRow<'a> {
+    pub project: &'a ProjectInfo,
+    pub pinned: bool,
+}
+
+pub fn view<'a>(
+    rows: Vec<ProjectRow<'a>>,
     selected: usize,
     scroll_id: scrollable::Id,
-) -> Element<'_, Message> {
-    if projects.is_empty() {
+) -> Element<'a, Message> {
+    if rows.is_empty() {
         return container(
             text("No projects found — run Claude Code in a directory to see it here.")
                 .size(13)
@@ -27,21 +35,32 @@ pub fn view(
         .into();
     }
 
-    let mut col: Column<'_, Message> = Column::new();
-    for (i, project) in projects.iter().enumerate() {
+    let mut col: Column<'a, Message> = Column::new();
+    for (i, project_row) in rows.into_iter().enumerate() {
         let is_selected = i == selected;
+        let project = project_row.project;
+        let label_color = if project_row.pinned {
+            super::theme::ACCENT
+        } else {
+            super::theme::TEXT
+        };
         let label = text(project.display.clone())
             .size(13)
-            .color(super::theme::TEXT)
+            .color(label_color)
             .wrapping(iced::widget::text::Wrapping::None);
-        let row_body: Element<'_, Message> = if project.is_default {
-            // The default row gets a muted "default" tag on the right
-            // so the user can tell which entry is the original
-            // `~/.slashpad` cwd at a glance.
+        // Right-side tag(s): pinned/default, muted so they don't
+        // dominate the row but give a non-color indicator of status.
+        let tag_text: Option<&'static str> = match (project_row.pinned, project.is_default) {
+            (true, true) => Some("pinned · default"),
+            (true, false) => Some("pinned"),
+            (false, true) => Some("default"),
+            (false, false) => None,
+        };
+        let row_body: Element<'_, Message> = if let Some(tag) = tag_text {
             row![
                 label,
                 iced::widget::horizontal_space().width(Length::Fill),
-                text("default").size(11).color(super::theme::MUTED),
+                text(tag).size(11).color(super::theme::MUTED),
             ]
             .spacing(12)
             .align_y(iced::Alignment::Center)
