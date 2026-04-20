@@ -1497,6 +1497,14 @@ impl Slashpad {
             }
 
             Message::TogglePin => {
+                // Pin is a chat-only affordance — the shortcut is inert
+                // everywhere else (the keyhints bar only advertises it
+                // in Chatting, but the chord is globally reserved by
+                // `ShortcutFilter`, so we still receive the message in
+                // other modes and drop it here).
+                if self.mode != Mode::Chatting {
+                    return Task::none();
+                }
                 if self.pinned.is_some() {
                     // Unpin → full reset to the default cursor-centered
                     // behavior. Clear both stored positions and actively
@@ -1519,12 +1527,8 @@ impl Slashpad {
                         }
                     }
                 } else {
-                    // Pin → capture chat (if viewing one) and position.
-                    let chat_id = if self.mode == Mode::Chatting {
-                        self.active_chat_id
-                    } else {
-                        None
-                    };
+                    // Pin → capture the active chat and current position.
+                    let chat_id = self.active_chat_id;
                     if let Some(position) = self.dragged_position {
                         self.pinned = Some(Pin { position, chat_id });
                     } else if let Some(id) = self.palette_window_id {
@@ -1544,16 +1548,18 @@ impl Slashpad {
 
             Message::CommitPin(point) => {
                 if let Some(position) = point {
-                    // Only commit if the user hasn't managed to drag or
-                    // toggle in the tiny window between kicking off the
-                    // async read and this handler firing.
-                    if self.pinned.is_none() && self.dragged_position.is_none() {
-                        let chat_id = if self.mode == Mode::Chatting {
-                            self.active_chat_id
-                        } else {
-                            None
-                        };
-                        self.pinned = Some(Pin { position, chat_id });
+                    // Only commit if the user hasn't managed to drag,
+                    // toggle, or leave Chatting in the tiny window
+                    // between kicking off the async read and this
+                    // handler firing.
+                    if self.mode == Mode::Chatting
+                        && self.pinned.is_none()
+                        && self.dragged_position.is_none()
+                    {
+                        self.pinned = Some(Pin {
+                            position,
+                            chat_id: self.active_chat_id,
+                        });
                     }
                 }
                 Task::none()

@@ -104,13 +104,11 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         Mode::Settings => vec![],
     };
 
-    // Pin/unpin affordance: always visible (except in Settings, which
-    // runs its own hint set). Pinning is a single unified action —
-    // snapshots the window's on-screen position and, if the user is
-    // viewing a chat, that chat too — so "Pin" / "Unpin" with no
-    // qualifier is accurate in every mode. Partitioned into the left
-    // cluster below so it renders right beside `esc`.
-    if !matches!(mode, Mode::Settings) {
+    // Pin/unpin affordance: only meaningful inside a chat — pinning
+    // snapshots the window's on-screen position *and* the active chat
+    // id so the next summon restores both. Outside Chatting there's no
+    // chat to pin, so the hint and shortcut are hidden.
+    if matches!(mode, Mode::Chatting) {
         let label = if ctx.pinned { "Unpin" } else { "Pin" };
         hints.push(("⌘⇧P", label));
     }
