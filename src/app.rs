@@ -954,6 +954,15 @@ impl Slashpad {
                     return Task::none();
                 }
                 if let Some(query) = value.strip_prefix('/') {
+                    // Re-scan skills from disk every time we enter skill
+                    // mode so newly created skills appear without
+                    // reopening the palette.
+                    if self.mode != Mode::Skills {
+                        self.all_skills = skills::load_skills(
+                            self.settings.load_user_settings,
+                        )
+                        .unwrap_or_default();
+                    }
                     self.filtered_skills = if query.is_empty() {
                         self.all_skills.clone()
                     } else {
