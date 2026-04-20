@@ -18,6 +18,7 @@ pub enum Payload {
     List(ListPayload),
     Messages(MessagesPayload),
     Tag(TagPayload),
+    Rename(RenamePayload),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +63,18 @@ pub struct TagPayload {
     pub cwd: String,
 }
 
+/// `mode: "rename"` — one-shot call to the SDK's `renameSession(sessionId, title, { dir })`.
+/// Persists `title` into the session's on-disk metadata, so a subsequent
+/// `listSessions()` returns it in `summary`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RenamePayload {
+    pub mode: &'static str, // "rename"
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub title: String,
+    pub cwd: String,
+}
+
 impl Payload {
     pub fn chat(
         prompt: String,
@@ -97,6 +110,15 @@ impl Payload {
             mode: "tag",
             session_id,
             tag,
+            cwd,
+        })
+    }
+
+    pub fn rename(session_id: String, title: String, cwd: String) -> Self {
+        Payload::Rename(RenamePayload {
+            mode: "rename",
+            session_id,
+            title,
             cwd,
         })
     }

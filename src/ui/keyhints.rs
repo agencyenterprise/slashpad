@@ -55,9 +55,13 @@ pub struct KeyhintContext {
     /// `session_id`. Gates the `⌘K Actions` hint so it only appears
     /// for rows the action can actually target.
     pub can_open_options: bool,
-    /// Which row within the options menu is highlighted. 0 = Pin/Unpin,
-    /// 1 = Archive. Used to pick the ↵ hint label.
+    /// Which row within the options menu is highlighted. For Session:
+    /// 0 = Rename, 1 = Pin/Unpin, 2 = Archive. For Skill / Project:
+    /// 0 = Pin/Unpin. Used to pick the ↵ hint label.
     pub session_menu_selected: usize,
+    /// True while a session row is in inline-rename mode. Replaces the
+    /// normal idle-mode hints with `⏎ Save / esc Cancel`.
+    pub renaming: bool,
     /// True when the currently-selected row's session is tagged pinned.
     /// Flips the Pin/Unpin hint label while the menu is open.
     pub selected_is_pinned: bool,
@@ -77,6 +81,31 @@ pub struct KeyhintContext {
 pub const BAR_HEIGHT: f32 = 40.0;
 
 pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
+    // While a row is in inline-rename mode, show only the two hints that
+    // apply — save / cancel. Takes precedence over the menu-open bar
+    // (the menu is already closed by the time rename mode is entered).
+    if ctx.renaming {
+        let mut bar: Row<'static, Message> =
+            Row::new().spacing(12).align_y(iced::Alignment::Center);
+        bar = bar.push(hint_item("esc", "Cancel"));
+        bar = bar.push(horizontal_space().width(Length::Fill));
+        bar = bar.push(hint_item("↵", "Save"));
+        return container(bar)
+            .padding([6, 12])
+            .width(Length::Fill)
+            .style(|_theme: &iced::Theme| iced::widget::container::Style {
+                background: None,
+                border: iced::Border {
+                    color: iced::Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: 0.0.into(),
+                },
+                text_color: Some(theme::TEXT),
+                ..Default::default()
+            })
+            .into();
+    }
+
     // When the floating options menu is open, replace the whole hint
     // set with menu-specific ones regardless of current mode.
     if ctx.session_menu_open {
@@ -85,15 +114,13 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         bar = bar.push(hint_item("esc", "Close"));
         bar = bar.push(hint_item("↑↓", "Navigate"));
         bar = bar.push(horizontal_space().width(Length::Fill));
-        let action_label = match ctx.session_menu_selected {
-            0 => {
-                if ctx.selected_is_pinned {
-                    "Unpin"
-                } else {
-                    "Pin"
-                }
-            }
-            _ => "Archive",
+        let pin_label = if ctx.selected_is_pinned { "Unpin" } else { "Pin" };
+        let action_label = match (mode, ctx.session_menu_selected) {
+            (Mode::Idle, 0) => "Rename",
+            (Mode::Idle, 1) => pin_label,
+            (Mode::Idle, 2) => "Archive",
+            // Skills / Projects only surface the pin action.
+            _ => pin_label,
         };
         bar = bar.push(hint_item("↵", action_label));
         return container(bar)

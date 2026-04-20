@@ -39,7 +39,7 @@ impl MenuTarget {
     /// to clamp `session_menu_selected` when arrow-navigating.
     pub fn row_count(self) -> usize {
         match self {
-            MenuTarget::Session => 2, // Pin + Archive
+            MenuTarget::Session => 3, // Pin + Archive + Rename
             MenuTarget::Skill | MenuTarget::Project => 1, // Pin only
         }
     }
@@ -75,18 +75,35 @@ pub fn view(
         .color(theme::MUTED)
         .into();
 
+    // Skills / Projects targets only have Pin, so for them the pin row
+    // sits at index 0. Session target leads with Rename (0), then
+    // Pin/Unpin (1), then Archive (2).
+    let (pin_selected_idx, is_session) = match target {
+        MenuTarget::Session => (1, true),
+        MenuTarget::Skill | MenuTarget::Project => (0, false),
+    };
     let pin = menu_row(
         target.pin_label(is_pinned),
-        menu_selected == 0,
+        menu_selected == pin_selected_idx,
         can_act,
         Message::TogglePinSelectedRow,
     );
 
-    let mut body: Column<'static, Message> = column![header, pin].spacing(6);
-    if matches!(target, MenuTarget::Session) {
+    let mut body: Column<'static, Message> = column![header].spacing(6);
+    if is_session {
+        let rename = menu_row(
+            "Rename session",
+            menu_selected == 0,
+            can_act,
+            Message::BeginRenameSelectedRow,
+        );
+        body = body.push(rename);
+    }
+    body = body.push(pin);
+    if is_session {
         let archive = menu_row(
             "Archive session",
-            menu_selected == 1,
+            menu_selected == 2,
             can_act,
             Message::ArchiveSelectedRow,
         );

@@ -106,6 +106,41 @@ pub async fn tag_session(
     }
 }
 
+/// Rename a session via the SDK's `renameSession(sessionId, title, { dir })`.
+/// The new title is persisted into the session's on-disk metadata and will
+/// appear in the `summary` field of a subsequent `listSessions()` call.
+/// Spawns a one-shot `runner.mjs rename` process against `cwd` and waits
+/// for `complete` / `error`.
+pub async fn rename_session(
+    cwd: &Path,
+    session_id: &str,
+    title: &str,
+) -> anyhow::Result<()> {
+    let payload = Payload::rename(
+        session_id.to_string(),
+        title.to_string(),
+        cwd.to_string_lossy().to_string(),
+    );
+    let mut spawned = sidecar::spawn(payload)?;
+
+    let mut err: Option<String> = None;
+    while let Some(event) = spawned.event_rx.recv().await {
+        match event {
+            SidecarEvent::Complete { .. } => break,
+            SidecarEvent::Error { error, .. } => {
+                err = Some(error.unwrap_or_else(|| "renameSession failed".to_string()));
+                break;
+            }
+            _ => {}
+        }
+    }
+    let _ = spawned.follow_up_tx.send(FollowUp::Close);
+    match err {
+        Some(e) => Err(anyhow::anyhow!(e)),
+        None => Ok(()),
+    }
+}
+
 /// Spawn `runner.mjs messages <sessionId>` against `cwd` and collect
 /// historical chat messages. `cwd` must be the same project the
 /// session was recorded in — sessions live under

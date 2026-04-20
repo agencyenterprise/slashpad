@@ -1,4 +1,4 @@
-import { query, listSessions, getSessionMessages, tagSession } from "@anthropic-ai/claude-agent-sdk";
+import { query, listSessions, getSessionMessages, tagSession, renameSession } from "@anthropic-ai/claude-agent-sdk";
 import { createInterface } from "readline";
 import { existsSync } from "fs";
 
@@ -51,6 +51,18 @@ if (mode === "list") {
 if (mode === "tag") {
   try {
     await tagSession(payload.sessionId, payload.tag ?? null, {
+      dir: payload.cwd || process.env.HOME,
+    });
+    emit({ type: "complete", timestamp: Date.now() });
+  } catch (e) {
+    emit({ type: "error", error: e.message || String(e), timestamp: Date.now() });
+  }
+  process.exit(0);
+}
+
+if (mode === "rename") {
+  try {
+    await renameSession(payload.sessionId, payload.title, {
       dir: payload.cwd || process.env.HOME,
     });
     emit({ type: "complete", timestamp: Date.now() });

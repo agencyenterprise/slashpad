@@ -510,6 +510,20 @@ pub enum Message {
     /// Async result from `sessions::tag_session`. `Ok` triggers a
     /// refresh of the session list; `Err` restores the row.
     SessionTagged(Result<(), String>),
+    /// ↵ while the options menu is open with Rename highlighted — swaps
+    /// the selected row's title for an inline `text_input` pre-filled
+    /// with the current title.
+    BeginRenameSelectedRow,
+    /// Typing into the inline rename text_input.
+    RenameInputChanged(String),
+    /// ↵ in the inline rename input — persist the new title via the SDK
+    /// and exit edit mode.
+    CommitRename,
+    /// Esc while the inline rename input is active — abort without saving.
+    CancelRename,
+    /// Async result from `sessions::rename_session`. Triggers a
+    /// `refresh_sessions` so past rows pick up the SDK-persisted summary.
+    SessionRenamed(Result<(), String>),
 }
 
 /// Root application state.
@@ -554,8 +568,16 @@ pub struct Slashpad {
     /// `esc` / `⌘K` dismiss the menu without changing the selection.
     pub session_menu_open: bool,
     /// Which row within the options menu is highlighted. 0 = Pin/Unpin,
-    /// 1 = Archive. Reset to 0 on menu open/close.
+    /// 1 = Archive, 2 = Rename. Reset to 0 on menu open/close.
     pub session_menu_selected: usize,
+    /// Session id currently in inline-rename mode on the idle list.
+    /// `Some(id)` means the row matching `id` renders a `text_input`
+    /// in place of its title; all other rows render normally. Cleared
+    /// on commit / cancel / mode transitions away from Idle.
+    pub renaming_session_id: Option<String>,
+    /// Draft value of the inline rename input, pre-filled with the row's
+    /// current title when rename mode is entered.
+    pub rename_input: String,
     /// Has the user moved into the idle list via ↑/↓? Controls whether
     /// Enter with a non-empty input resumes the highlighted row (true)
     /// or starts a new chat with the typed text (false). Always true
@@ -725,6 +747,8 @@ impl Slashpad {
             selected_idle_index: 0,
             session_menu_open: false,
             session_menu_selected: 0,
+            renaming_session_id: None,
+            rename_input: String::new(),
             idle_selection_active: true,
             api_key_input: String::new(),
             settings,
@@ -1106,14 +1130,25 @@ impl Slashpad {
             }
 
             Message::Submit => {
+                // Inline rename input steals ↵ — commit the new title.
+                // Takes precedence over every other Submit behavior so
+                // Enter doesn't also open/send while editing.
+                if self.renaming_session_id.is_some() {
+                    return self.dispatch_update(Message::CommitRename);
+                }
                 // While the options menu is open, ↵ is rebound to the
-                // highlighted action (archive) — never the normal Submit
-                // path. This lets the menu feel like a modal overlay
-                // without a separate key-handling layer.
+                // highlighted action — never the normal Submit path.
+                // This lets the menu feel like a modal overlay without
+                // a separate key-handling layer.
+                //
+                // Session target rows: 0 = Rename, 1 = Pin/Unpin, 2 = Archive.
+                // Skill / Project targets only have Pin at index 0.
                 if self.session_menu_open {
-                    return self.dispatch_update(match self.session_menu_selected {
-                        0 => Message::TogglePinSelectedRow,
-                        _ => Message::ArchiveSelectedRow,
+                    return self.dispatch_update(match (self.mode, self.session_menu_selected) {
+                        (Mode::Idle, 0) => Message::BeginRenameSelectedRow,
+                        (Mode::Idle, 1) => Message::TogglePinSelectedRow,
+                        (Mode::Idle, 2) => Message::ArchiveSelectedRow,
+                        _ => Message::TogglePinSelectedRow,
                     });
                 }
                 self.handle_submit()
@@ -1135,6 +1170,13 @@ impl Slashpad {
             }
 
             Message::EscapePressed => {
+                // If a row is in inline-rename mode, Esc aborts the rename
+                // without saving and restores focus to the main input.
+                // Takes precedence over every other Esc behavior so the
+                // palette stays open while the user backs out of editing.
+                if self.renaming_session_id.is_some() {
+                    return self.dispatch_update(Message::CancelRename);
+                }
                 // If the options menu is open, Esc closes it and keeps
                 // the underlying idle-list selection intact. Takes
                 // precedence over every other Esc behavior.
@@ -1335,6 +1377,10 @@ impl Slashpad {
             }
 
             Message::SelectSession(session_index) => {
+                // Clicking a row while another row is in rename mode
+                // abandons the edit — the user clearly moved on.
+                self.renaming_session_id = None;
+                self.rename_input.clear();
                 // `session_index` is an index into the *past sessions*
                 // portion of the idle list (post fuzzy-filter + dupe
                 // removal). The caller already passes the correct
@@ -1348,6 +1394,8 @@ impl Slashpad {
             }
 
             Message::SelectChat(chat_id) => {
+                self.renaming_session_id = None;
+                self.rename_input.clear();
                 if let Some(entry) = self.chats.get_mut(&chat_id) {
                     entry.scroll.autoscroll = true;
                     self.active_chat_id = Some(chat_id);
@@ -2153,6 +2201,116 @@ impl Slashpad {
                 }
             }
 
+            Message::BeginRenameSelectedRow => {
+                // Resolve the selected row's session_id and current
+                // displayed title so we can pre-fill the inline input.
+                let rows = self.build_idle_rows();
+                let Some(row) = rows.get(self.selected_idle_index).cloned() else {
+                    self.session_menu_open = false;
+                    self.session_menu_selected = 0;
+                    return Task::none();
+                };
+                let (session_id, title) = match &row {
+                    IdleRowSelection::Active(chat_id) => {
+                        let entry = self.chats.get(chat_id);
+                        let sid = entry.and_then(|e| e.state.session_id.clone());
+                        let title = entry.map(|e| e.state.title.clone()).unwrap_or_default();
+                        (sid, title)
+                    }
+                    IdleRowSelection::Past(info) => {
+                        (Some(info.session_id.clone()), info.summary.clone())
+                    }
+                };
+                let Some(session_id) = session_id else {
+                    // Active chat without a session_id yet — rename is
+                    // impossible. Close the menu so the user can see the
+                    // action didn't fire.
+                    self.session_menu_open = false;
+                    self.session_menu_selected = 0;
+                    return Task::none();
+                };
+
+                self.renaming_session_id = Some(session_id);
+                self.rename_input = title;
+                self.session_menu_open = false;
+                self.session_menu_selected = 0;
+                text_input::focus(RENAME_INPUT_ID.clone())
+            }
+
+            Message::RenameInputChanged(value) => {
+                self.rename_input = value;
+                Task::none()
+            }
+
+            Message::CommitRename => {
+                let Some(session_id) = self.renaming_session_id.take() else {
+                    return Task::none();
+                };
+                let new_title = self.rename_input.trim().to_string();
+                self.rename_input.clear();
+
+                // Empty or whitespace-only title is a no-op — clearing a
+                // session name isn't a supported SDK operation, so we
+                // treat this the same as Esc-cancel.
+                if new_title.is_empty() {
+                    return text_input::focus(INPUT_ID.clone());
+                }
+
+                // Optimistic UI: update any active chat's in-memory title
+                // and the corresponding SessionInfo summary so the row
+                // re-renders immediately. refresh_sessions on SessionRenamed
+                // reconciles against the SDK.
+                for entry in self.chats.values_mut() {
+                    if entry.state.session_id.as_deref() == Some(session_id.as_str()) {
+                        entry.state.title = new_title.clone();
+                    }
+                }
+                if let Some(info) = self
+                    .recent_sessions
+                    .iter_mut()
+                    .find(|s| s.session_id == session_id)
+                {
+                    info.summary = new_title.clone();
+                }
+
+                let cwd = self.project_path.clone();
+                let sid_for_task = session_id;
+                let title_for_task = new_title;
+                Task::batch([
+                    text_input::focus(INPUT_ID.clone()),
+                    Task::perform(
+                        async move {
+                            crate::sessions::rename_session(
+                                &cwd,
+                                &sid_for_task,
+                                &title_for_task,
+                            )
+                            .await
+                            .map_err(|e| e.to_string())
+                        },
+                        Message::SessionRenamed,
+                    ),
+                ])
+            }
+
+            Message::CancelRename => {
+                self.renaming_session_id = None;
+                self.rename_input.clear();
+                text_input::focus(INPUT_ID.clone())
+            }
+
+            Message::SessionRenamed(result) => {
+                match result {
+                    Ok(()) => self.refresh_sessions(),
+                    Err(e) => {
+                        eprintln!("[slashpad] renameSession failed: {e}");
+                        // Re-sync from truth so the optimistic title
+                        // update rolls back if the SDK rejected the rename.
+                        self.refresh_sessions()
+                    }
+                }
+            }
+
             Message::ChatScrolled(viewport) => {
                 // Record the new viewport geometry on the active chat and
                 // recompute `autoscroll`: on when the user is sitting at
@@ -2362,6 +2520,8 @@ impl Slashpad {
                     selected,
                     self.spinner_frame,
                     IDLE_LIST_SCROLL_ID.clone(),
+                    self.renaming_session_id.as_deref(),
+                    &self.rename_input,
                 ));
                 has_fill_middle = true;
             }
@@ -2467,6 +2627,7 @@ impl Slashpad {
                 session_menu_open: self.session_menu_open,
                 can_open_options,
                 session_menu_selected: self.session_menu_selected,
+                renaming: self.renaming_session_id.is_some(),
                 selected_is_pinned,
                 pinned_count,
             },
@@ -3783,6 +3944,10 @@ impl Slashpad {
 
     fn hide_palette(&mut self) -> Task<Message> {
         self.palette_visible = false;
+        // Drop any dangling rename state so the row isn't still in edit
+        // mode the next time the palette is summoned.
+        self.renaming_session_id = None;
+        self.rename_input.clear();
         let Some(id) = self.palette_window_id else {
             return Task::none();
         };
@@ -3907,3 +4072,8 @@ fn external_subscription_stream() -> impl Stream<Item = Message> {
 /// Stable iced text_input ID used for focusing the palette input.
 pub(crate) static INPUT_ID: std::sync::LazyLock<text_input::Id> =
     std::sync::LazyLock::new(|| text_input::Id::new("slashpad-command-input"));
+
+/// Stable iced text_input ID used for focusing the inline rename input
+/// when a session row is in edit mode.
+pub(crate) static RENAME_INPUT_ID: std::sync::LazyLock<text_input::Id> =
+    std::sync::LazyLock::new(|| text_input::Id::new("slashpad-rename-input"));

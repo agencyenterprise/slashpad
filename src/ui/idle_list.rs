@@ -4,10 +4,10 @@
 //! borrowed references into `self.chats` / `self.recent_sessions`, so
 //! the view lifetime is tied to `&Slashpad`.
 
-use iced::widget::{button, container, row, scrollable, text, Column};
+use iced::widget::{button, container, row, scrollable, text, text_input, Column};
 use iced::{Element, Length};
 
-use crate::app::{ChatEntry, Message};
+use crate::app::{ChatEntry, Message, RENAME_INPUT_ID};
 use crate::state::{ChatStatus, SessionInfo};
 
 /// One row in the unified idle list.
@@ -33,6 +33,8 @@ pub fn view<'a>(
     selected: usize,
     spinner_frame: u32,
     scroll_id: scrollable::Id,
+    renaming: Option<&'a str>,
+    rename_input: &'a str,
 ) -> Element<'a, Message> {
     let mut col: Column<'a, Message> = Column::new();
 
@@ -47,20 +49,36 @@ pub fn view<'a>(
         let is_selected = i == selected;
         let is_first = i == 0;
         let is_last = i == last;
+        // session_id for the row (if any) — used to decide whether this
+        // row should render as an inline rename input.
+        let row_session_id: Option<&str> = match &row_item {
+            IdleRow::Active { entry, .. } => entry.state.session_id.as_deref(),
+            IdleRow::Past { session, .. } => Some(session.session_id.as_str()),
+        };
+        let is_editing = match (renaming, row_session_id) {
+            (Some(editing_id), Some(row_id)) => editing_id == row_id,
+            _ => false,
+        };
+
         let (row_el, msg) = match row_item {
             IdleRow::Active { entry, pinned } => {
-                let title = entry.state.title.clone();
                 let status_label = status_text(
                     entry.state.status,
                     spinner_frame,
                     entry.state.last_activity_ms,
                 );
                 let status_color = status_color(entry.state.status);
-                let row = row![
-                    text(title)
+                let title_el: Element<'a, Message> = if is_editing {
+                    rename_input_widget(rename_input, pinned)
+                } else {
+                    text(entry.state.title.clone())
                         .size(13)
                         .color(title_color(pinned))
-                        .width(Length::FillPortion(4)),
+                        .width(Length::FillPortion(4))
+                        .into()
+                };
+                let row = row![
+                    title_el,
                     text(status_label)
                         .size(11)
                         .color(status_color)
@@ -72,11 +90,17 @@ pub fn view<'a>(
             }
             IdleRow::Past { session, pinned } => {
                 let time = format_relative(session.last_modified);
-                let row = row![
+                let title_el: Element<'a, Message> = if is_editing {
+                    rename_input_widget(rename_input, pinned)
+                } else {
                     text(session.summary.clone())
                         .size(13)
                         .color(title_color(pinned))
-                        .width(Length::FillPortion(4)),
+                        .width(Length::FillPortion(4))
+                        .into()
+                };
+                let row = row![
+                    title_el,
                     text(time)
                         .size(11)
                         .color(super::theme::MUTED)
@@ -107,16 +131,25 @@ pub fn view<'a>(
             },
         );
 
-        let btn = button(row_container)
-            .on_press(msg)
-            .padding(0)
-            .width(Length::Fill)
-            .style(|_theme, _status| iced::widget::button::Style {
-                background: None,
-                text_color: super::theme::TEXT,
-                ..Default::default()
-            });
-        col = col.push(btn);
+        // While a row is in rename mode, don't wrap it in a button —
+        // otherwise clicks inside the text_input bubble up as
+        // SelectSession/SelectChat and immediately cancel the edit. The
+        // plain container still participates in layout and selection
+        // highlighting; the inline text_input handles input.
+        if is_editing {
+            col = col.push(row_container);
+        } else {
+            let btn = button(row_container)
+                .on_press(msg)
+                .padding(0)
+                .width(Length::Fill)
+                .style(|_theme, _status| iced::widget::button::Style {
+                    background: None,
+                    text_color: super::theme::TEXT,
+                    ..Default::default()
+                });
+            col = col.push(btn);
+        }
     }
 
     // Window is fixed-height now (see `Slashpad::LAUNCHER_H`), so the
@@ -165,6 +198,41 @@ fn title_color(pinned: bool) -> iced::Color {
     } else {
         super::theme::TEXT
     }
+}
+
+/// Inline rename text_input, styled to blend with the row's title so the
+/// swap between static text and editable field is visually minimal.
+/// Pre-filled with the row's current title by the caller. Enter/Esc are
+/// routed by the shared `decode_shortcut` subscription in `app.rs`:
+/// while `renaming_session_id` is set, `Submit` short-circuits to
+/// `CommitRename` and `EscapePressed` to `CancelRename`. We intentionally
+/// do NOT set `.on_submit` here — it would race the subscription and
+/// cause Enter to fire twice (once as CommitRename, once as Submit that
+/// falls through to opening the session).
+fn rename_input_widget<'a>(value: &'a str, pinned: bool) -> Element<'a, Message> {
+    let value_color = title_color(pinned);
+    text_input("Rename session…", value)
+        .id(RENAME_INPUT_ID.clone())
+        .on_input(Message::RenameInputChanged)
+        .size(13)
+        .padding(0)
+        .width(Length::FillPortion(4))
+        .style(move |_theme: &iced::Theme, _status| iced::widget::text_input::Style {
+            background: iced::Background::Color(iced::Color::TRANSPARENT),
+            border: iced::Border {
+                color: iced::Color::TRANSPARENT,
+                width: 0.0,
+                radius: 0.0.into(),
+            },
+            icon: super::theme::MUTED,
+            placeholder: super::theme::MUTED,
+            value: value_color,
+            selection: iced::Color {
+                a: 0.35,
+                ..super::theme::ACCENT
+            },
+        })
+        .into()
 }
 
 fn status_text(status: ChatStatus, spinner_frame: u32, last_activity_ms: i64) -> String {
