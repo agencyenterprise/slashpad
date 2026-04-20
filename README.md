@@ -8,7 +8,7 @@ Press the global hotkey (default **Ctrl+Space**) â†’ type a command or prompt â†
 
 Download the latest release (macOS, signed & notarized):
 
-- [**Slashpad for Apple Silicon**](https://github.com/agencyenterprise/slashpad/releases/latest/download/Slashpad-darwin-aarch64.dmg) (M1/M2/M3/M4)
+- [**Slashpad for Apple Silicon**](https://github.com/agencyenterprise/slashpad/releases/latest/download/Slashpad-darwin-aarch64.dmg)
 - [**Slashpad for Intel**](https://github.com/agencyenterprise/slashpad/releases/latest/download/Slashpad-darwin-x86_64.dmg)
 
 Open the DMG, drag **Slashpad** to your Applications folder, and launch it. Press **Ctrl+Space** to open the palette. You can change the hotkey in Settings (click the tray menu icon).
