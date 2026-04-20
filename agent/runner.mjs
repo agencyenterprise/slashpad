@@ -38,8 +38,21 @@ if (mode === "list") {
         summary: s.summary || s.firstPrompt || "Untitled",
         lastModified: s.lastModified,
         firstPrompt: s.firstPrompt,
+        tag: s.tag ?? null,
       });
     }
+    emit({ type: "complete", timestamp: Date.now() });
+  } catch (e) {
+    emit({ type: "error", error: e.message || String(e), timestamp: Date.now() });
+  }
+  process.exit(0);
+}
+
+if (mode === "tag") {
+  try {
+    await tagSession(payload.sessionId, payload.tag ?? null, {
+      dir: payload.cwd || process.env.HOME,
+    });
     emit({ type: "complete", timestamp: Date.now() });
   } catch (e) {
     emit({ type: "error", error: e.message || String(e), timestamp: Date.now() });
@@ -145,7 +158,6 @@ if (mode === "messages") {
 // Chat mode — long-lived process
 const { prompt, cwd } = payload;
 let sessionId = payload.resume || null;
-let isFirstTurn = true;
 
 async function runTurn(userPrompt) {
   emit({ type: "turn_start", timestamp: Date.now() });
@@ -221,12 +233,6 @@ async function runTurn(userPrompt) {
       if (message.session_id && message.session_id !== sessionId) {
         sessionId = message.session_id;
         emit({ type: "session_id", sessionId, timestamp: Date.now() });
-
-        if (isFirstTurn && !payload.resume) {
-          const dir = cwd || process.env.HOME;
-          tagSession(sessionId, "slashpad", { dir }).catch(() => {});
-          isFirstTurn = false;
-        }
       }
 
       if (message.type === "stream_event") {

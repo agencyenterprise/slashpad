@@ -6,6 +6,7 @@ pub mod project_picker;
 pub mod selectable_bubble;
 pub mod selectable_markdown;
 pub mod selectable_rich_text;
+pub mod session_options_menu;
 pub mod settings;
 pub mod shortcut_filter;
 pub mod skill_list;

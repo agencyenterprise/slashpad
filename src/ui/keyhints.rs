@@ -48,6 +48,13 @@ pub struct KeyhintContext {
     /// palette later restores both. Swaps the hint label from "Pin"
     /// to "Unpin".
     pub pinned: bool,
+    /// True when the floating `⌘K Actions` submenu is open. Replaces
+    /// the normal idle-mode hints with menu-specific ones.
+    pub session_menu_open: bool,
+    /// True when the currently-selected idle row has a tagable
+    /// `session_id`. Gates the `⌘K Actions` hint so it only appears
+    /// for rows the action can actually target.
+    pub can_open_options: bool,
 }
 
 /// Fixed footer height reserved for the keyhints bar, used by
@@ -59,6 +66,30 @@ pub struct KeyhintContext {
 pub const BAR_HEIGHT: f32 = 40.0;
 
 pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
+    // When the floating options menu is open, replace the whole hint
+    // set with menu-specific ones regardless of current mode.
+    if ctx.session_menu_open {
+        let mut bar: Row<'static, Message> =
+            Row::new().spacing(12).align_y(iced::Alignment::Center);
+        bar = bar.push(hint_item("esc", "Close"));
+        bar = bar.push(horizontal_space().width(Length::Fill));
+        bar = bar.push(hint_item("↵", "Archive"));
+        return container(bar)
+            .padding([6, 12])
+            .width(Length::Fill)
+            .style(|_theme: &iced::Theme| iced::widget::container::Style {
+                background: None,
+                border: iced::Border {
+                    color: iced::Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: 0.0.into(),
+                },
+                text_color: Some(theme::TEXT),
+                ..Default::default()
+            })
+            .into();
+    }
+
     let mut hints: Vec<(&'static str, &'static str)> = match mode {
         Mode::Idle if ctx.selection_active && ctx.has_rows => vec![
             ("↵", "Open"),
@@ -111,6 +142,17 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
     if matches!(mode, Mode::Chatting) {
         let label = if ctx.pinned { "Unpin" } else { "Pin" };
         hints.push(("⌘⇧P", label));
+    }
+
+    // Actions submenu affordance: only meaningful in Idle when a row is
+    // selected and has a session id to tag. Hidden otherwise to avoid
+    // advertising a shortcut that would be a no-op.
+    if matches!(mode, Mode::Idle)
+        && ctx.selection_active
+        && ctx.has_rows
+        && ctx.can_open_options
+    {
+        hints.push(("⌘K", "Actions"));
     }
 
     // Left cluster: `esc`, `⌘⇧P`, and `ctrl c` render flush-left in

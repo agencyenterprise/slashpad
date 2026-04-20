@@ -56,11 +56,13 @@ pub async fn list_recent(cwd: &Path) -> anyhow::Result<Vec<SessionInfo>> {
                 summary,
                 last_modified,
                 first_prompt,
+                tag,
             } => out.push(SessionInfo {
                 session_id,
                 summary,
                 last_modified,
                 first_prompt,
+                tag,
             }),
             SidecarEvent::Complete { .. } | SidecarEvent::Error { .. } => break,
             _ => {}
@@ -68,6 +70,40 @@ pub async fn list_recent(cwd: &Path) -> anyhow::Result<Vec<SessionInfo>> {
     }
     let _ = spawned.follow_up_tx.send(FollowUp::Close);
     Ok(out)
+}
+
+/// Set (or clear, with `tag = None`) the SDK tag on a session. Spawns a
+/// one-shot `runner.mjs tag` process against `cwd` and waits for the
+/// `complete` / `error` event. Returns `Err` if the runner reported an
+/// error; `Ok(())` otherwise.
+pub async fn tag_session(
+    cwd: &Path,
+    session_id: &str,
+    tag: Option<&str>,
+) -> anyhow::Result<()> {
+    let payload = Payload::tag(
+        session_id.to_string(),
+        tag.map(|s| s.to_string()),
+        cwd.to_string_lossy().to_string(),
+    );
+    let mut spawned = sidecar::spawn(payload)?;
+
+    let mut err: Option<String> = None;
+    while let Some(event) = spawned.event_rx.recv().await {
+        match event {
+            SidecarEvent::Complete { .. } => break,
+            SidecarEvent::Error { error, .. } => {
+                err = Some(error.unwrap_or_else(|| "tagSession failed".to_string()));
+                break;
+            }
+            _ => {}
+        }
+    }
+    let _ = spawned.follow_up_tx.send(FollowUp::Close);
+    match err {
+        Some(e) => Err(anyhow::anyhow!(e)),
+        None => Ok(()),
+    }
 }
 
 /// Spawn `runner.mjs messages <sessionId>` against `cwd` and collect

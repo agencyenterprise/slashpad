@@ -128,6 +128,16 @@ impl ChatMessageView {
     }
 }
 
+/// Tag value used to mark a session as archived. Archived sessions are
+/// filtered out of the idle list by `past_session_rows`. Persistence is
+/// handled by the Claude Agent SDK's `tagSession` — no local registry.
+pub const TAG_ARCHIVED: &str = "archived";
+
+/// True when a tag marks a session as archived.
+pub fn is_archived(tag: Option<&str>) -> bool {
+    tag == Some(TAG_ARCHIVED)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     #[serde(rename = "sessionId")]
@@ -137,6 +147,9 @@ pub struct SessionInfo {
     pub last_modified: i64,
     #[serde(rename = "firstPrompt", default)]
     pub first_prompt: Option<String>,
+    /// SDK-backed tag (see `tagSession`). `None` for untagged sessions.
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 // ---------- multi-chat state ----------

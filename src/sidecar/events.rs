@@ -96,6 +96,10 @@ pub enum SidecarEvent {
         last_modified: i64,
         #[serde(rename = "firstPrompt", default)]
         first_prompt: Option<String>,
+        /// User-set session tag from the SDK. `None` for untagged
+        /// sessions, or for older sidecar events that predate this field.
+        #[serde(default)]
+        tag: Option<String>,
     },
     /// `messages` mode: one entry per historical chat message.
     ChatMessage {

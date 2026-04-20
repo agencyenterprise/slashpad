@@ -17,6 +17,7 @@ pub enum Payload {
     Chat(ChatPayload),
     List(ListPayload),
     Messages(MessagesPayload),
+    Tag(TagPayload),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,6 +50,18 @@ pub struct MessagesPayload {
     pub cwd: String,
 }
 
+/// `mode: "tag"` — one-shot call to the SDK's `tagSession(sessionId, tag, { dir })`.
+/// `tag: None` clears the tag.
+#[derive(Debug, Clone, Serialize)]
+pub struct TagPayload {
+    pub mode: &'static str, // "tag"
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    pub cwd: String,
+}
+
 impl Payload {
     pub fn chat(
         prompt: String,
@@ -75,6 +88,15 @@ impl Payload {
         Payload::Messages(MessagesPayload {
             mode: "messages",
             session_id,
+            cwd,
+        })
+    }
+
+    pub fn tag(session_id: String, tag: Option<String>, cwd: String) -> Self {
+        Payload::Tag(TagPayload {
+            mode: "tag",
+            session_id,
+            tag,
             cwd,
         })
     }

@@ -184,7 +184,8 @@ use crate::settings::{AppSettings, PreferredTerminal};
 use crate::sidecar::{self, FollowUp, Payload, SidecarEvent, SpawnedSidecar};
 use crate::skills;
 use crate::state::{
-    ChatId, ChatMessageView, ChatState, ChatStatus, Mode, Pin, SessionInfo, Skill,
+    is_archived, ChatId, ChatMessageView, ChatState, ChatStatus, Mode, Pin, SessionInfo, Skill,
+    TAG_ARCHIVED,
 };
 use crate::ui;
 
@@ -461,6 +462,16 @@ pub enum Message {
     UpgradeClicked,
     /// The background upgrade finished (success or failure).
     UpgradeFinished(Result<(), String>),
+    /// ⌘K in the idle list — open or close the floating actions menu
+    /// over the selected row. No-op when no row is selected or when
+    /// the selected row has no `session_id` to tag.
+    ToggleSessionMenu,
+    /// ↵ while the options menu is open — tag the selected row's
+    /// session as archived and (for active chats) close the chat.
+    ArchiveSelectedRow,
+    /// Async result from `sessions::tag_session`. `Ok` triggers a
+    /// refresh of the session list; `Err` restores the row.
+    SessionTagged(Result<(), String>),
 }
 
 /// Root application state.
@@ -500,6 +511,10 @@ pub struct Slashpad {
     /// Unified selection index walking active chats first, then past
     /// sessions — used for up/down nav in Mode::Idle.
     pub selected_idle_index: usize,
+    /// True when the floating actions submenu (⌘K) is open over the
+    /// idle list. While open, `↵` archives the selected row and
+    /// `esc` / `⌘K` dismiss the menu without changing the selection.
+    pub session_menu_open: bool,
     /// Has the user moved into the idle list via ↑/↓? Controls whether
     /// Enter with a non-empty input resumes the highlighted row (true)
     /// or starts a new chat with the typed text (false). Always true
@@ -667,6 +682,7 @@ impl Slashpad {
             spinner_frame: 0,
             recent_sessions: Vec::new(),
             selected_idle_index: 0,
+            session_menu_open: false,
             idle_selection_active: true,
             api_key_input: String::new(),
             settings,
@@ -892,6 +908,9 @@ impl Slashpad {
         if modifiers.command() && matches!(key.as_ref(), Key::Character("t")) {
             return Some(Message::OpenSessionInTerminal);
         }
+        if modifiers.command() && matches!(key.as_ref(), Key::Character("k")) {
+            return Some(Message::ToggleSessionMenu);
+        }
         None
     }
 
@@ -1020,7 +1039,16 @@ impl Slashpad {
                 snap_to_selection(IDLE_LIST_SCROLL_ID.clone(), 0, self.idle_row_count())
             }
 
-            Message::Submit => self.handle_submit(),
+            Message::Submit => {
+                // While the options menu is open, ↵ is rebound to the
+                // highlighted action (archive) — never the normal Submit
+                // path. This lets the menu feel like a modal overlay
+                // without a separate key-handling layer.
+                if self.session_menu_open {
+                    return self.dispatch_update(Message::ArchiveSelectedRow);
+                }
+                self.handle_submit()
+            }
 
             Message::FireAndForgetSubmit => {
                 let prompt = self.input.trim().to_string();
@@ -1038,6 +1066,13 @@ impl Slashpad {
             }
 
             Message::EscapePressed => {
+                // If the options menu is open, Esc closes it and keeps
+                // the underlying idle-list selection intact. Takes
+                // precedence over every other Esc behavior.
+                if self.session_menu_open {
+                    self.session_menu_open = false;
+                    return Task::none();
+                }
                 // If a hotkey recording is in progress, Esc cancels the
                 // recording rather than closing the settings window.
                 if self.recording_hotkey {
@@ -1112,6 +1147,14 @@ impl Slashpad {
             }
 
             Message::NavUp => {
+                // Swallow arrow keys while the options menu is open.
+                // The menu has a single item today, so there's nothing
+                // to move the cursor to — but we also don't want the
+                // keystroke to leak through and shift the idle-list
+                // selection behind the menu.
+                if self.session_menu_open {
+                    return Task::none();
+                }
                 match self.mode {
                     Mode::Skills => {
                         if self.selected_skill_index > 0 {
@@ -1158,6 +1201,9 @@ impl Slashpad {
             }
 
             Message::NavDown => {
+                if self.session_menu_open {
+                    return Task::none();
+                }
                 match self.mode {
                     Mode::Skills => {
                         let max = self.filtered_skills.len().saturating_sub(1);
@@ -1808,6 +1854,119 @@ impl Slashpad {
                 Task::none()
             }
 
+            Message::ToggleSessionMenu => {
+                // Only meaningful in Idle with a live row selection.
+                // Ignores the chord everywhere else so it feels dead
+                // rather than doing something surprising.
+                if self.session_menu_open {
+                    self.session_menu_open = false;
+                    return Task::none();
+                }
+                if self.mode != Mode::Idle
+                    || self.input.starts_with('/')
+                    || self.idle_row_count() == 0
+                    || !self.idle_selection_active
+                {
+                    return Task::none();
+                }
+                // Require a tagable session — archiving is the only
+                // action right now, and it needs a session_id.
+                if self.selected_row_session_id().is_none() {
+                    return Task::none();
+                }
+                self.session_menu_open = true;
+                Task::none()
+            }
+
+            Message::ArchiveSelectedRow => {
+                // Resolve the selected row's session_id and (if active)
+                // chat_id up front, while the `build_idle_rows` borrow
+                // is still alive — so we can drop it before mutating
+                // self.chats / self.recent_sessions below.
+                let rows = self.build_idle_rows();
+                let selected = rows.get(self.selected_idle_index).cloned();
+                let Some(row) = selected else {
+                    self.session_menu_open = false;
+                    return Task::none();
+                };
+                let (session_id, archived_chat_id) = match &row {
+                    IdleRowSelection::Active(chat_id) => {
+                        let sid = self
+                            .chats
+                            .get(chat_id)
+                            .and_then(|e| e.state.session_id.clone());
+                        (sid, Some(*chat_id))
+                    }
+                    IdleRowSelection::Past(info) => (Some(info.session_id.clone()), None),
+                };
+                let Some(session_id) = session_id else {
+                    // Active chat without a session_id yet — archive is
+                    // impossible. Close the menu so the user knows the
+                    // action didn't fire.
+                    self.session_menu_open = false;
+                    return Task::none();
+                };
+
+                // Optimistic UI: hide the row immediately so the list
+                // collapses before tagSession returns. `refresh_sessions`
+                // after success reconciles against the SDK's view.
+                self.recent_sessions
+                    .retain(|s| s.session_id != session_id);
+                if let Some(chat_id) = archived_chat_id {
+                    // Drop the ChatEntry — its SpawnedSidecar has
+                    // `kill_on_drop` on the child process, so
+                    // runner.mjs exits immediately.
+                    self.chats.remove(&chat_id);
+                    if self.active_chat_id == Some(chat_id) {
+                        self.active_chat_id = None;
+                    }
+                }
+
+                // Clamp selection into the new row count.
+                let count = self.idle_row_count();
+                if count == 0 {
+                    self.selected_idle_index = 0;
+                    self.idle_selection_active = false;
+                } else if self.selected_idle_index >= count {
+                    self.selected_idle_index = count - 1;
+                }
+
+                self.session_menu_open = false;
+
+                let cwd = self.project_path.clone();
+                let sid_for_task = session_id.clone();
+                Task::perform(
+                    async move {
+                        crate::sessions::tag_session(
+                            &cwd,
+                            &sid_for_task,
+                            Some(TAG_ARCHIVED),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())
+                    },
+                    Message::SessionTagged,
+                )
+            }
+
+            Message::SessionTagged(result) => {
+                match result {
+                    Ok(()) => {
+                        // Re-fetch to pick up the SDK-persisted tag.
+                        // The filter in `past_session_rows` keeps
+                        // archived entries out of the idle list.
+                        self.refresh_sessions()
+                    }
+                    Err(e) => {
+                        // Tag call failed — log and refetch so the UI
+                        // can fall back to reality (the optimistic
+                        // removal gets undone by the fresh list).
+                        eprintln!("[slashpad] tagSession failed: {e}");
+                        self.refresh_sessions()
+                    }
+                }
+            }
+
             Message::ChatScrolled(viewport) => {
                 // Record the new viewport geometry on the active chat and
                 // recompute `autoscroll`: on when the user is sitting at
@@ -1908,7 +2067,7 @@ impl Slashpad {
         // the fixed-height window. `Length::Fill` inside a `Shrink` parent
         // collapses to 0, so we have to make the whole vertical chain
         // (container → card → stack) `Length::Fill` end-to-end.
-        let mut stack: Column<'_, Message> = column![drag_strip, input]
+        let mut body: Column<'_, Message> = column![drag_strip, input]
             .spacing(0)
             .height(iced::Length::Fill);
 
@@ -1926,8 +2085,8 @@ impl Slashpad {
                 // list or — worse — "No matching skills" as soon as
                 // the user starts typing a natural-language argument.
                 if self.locked_skill().is_none() {
-                    stack = stack.push(ui::theme::divider());
-                    stack = stack.push(ui::skill_list::view(
+                    body = body.push(ui::theme::divider());
+                    body = body.push(ui::skill_list::view(
                         &self.filtered_skills,
                         self.selected_skill_index,
                         SKILL_LIST_SCROLL_ID.clone(),
@@ -1936,8 +2095,8 @@ impl Slashpad {
                 }
             }
             Mode::ProjectPicker => {
-                stack = stack.push(ui::theme::divider());
-                stack = stack.push(ui::project_picker::view(
+                body = body.push(ui::theme::divider());
+                body = body.push(ui::project_picker::view(
                     &self.filtered_projects,
                     self.selected_project_index,
                     PROJECT_PICKER_SCROLL_ID.clone(),
@@ -1967,8 +2126,8 @@ impl Slashpad {
                 } else {
                     usize::MAX
                 };
-                stack = stack.push(ui::theme::divider());
-                stack = stack.push(ui::idle_list::view(
+                body = body.push(ui::theme::divider());
+                body = body.push(ui::idle_list::view(
                     rows,
                     selected,
                     self.spinner_frame,
@@ -1982,8 +2141,8 @@ impl Slashpad {
                         entry.state.status,
                         ChatStatus::Idle | ChatStatus::Closed | ChatStatus::Error
                     );
-                    stack = stack.push(ui::theme::divider());
-                    stack = stack.push(ui::chat_panel::view(
+                    body = body.push(ui::theme::divider());
+                    body = body.push(ui::chat_panel::view(
                         &entry.state.messages,
                         is_generating,
                         entry.state.turn_submitted_at,
@@ -2001,11 +2160,16 @@ impl Slashpad {
             // Chatting with no active chat, Settings fallback). Push a
             // flexible spacer so the keyhints bar stays anchored to the
             // bottom edge of the fixed-size window.
-            stack = stack.push(iced::widget::vertical_space().height(iced::Length::Fill));
+            body = body.push(iced::widget::vertical_space().height(iced::Length::Fill));
         }
 
-        stack = stack.push(ui::theme::divider());
-        stack = stack.push(ui::keyhints::view(
+        body = body.push(ui::theme::divider());
+        let can_open_options = self.mode == Mode::Idle
+            && !self.input.starts_with('/')
+            && self.idle_selection_active
+            && self.idle_row_count() > 0
+            && self.selected_row_session_id().is_some();
+        body = body.push(ui::keyhints::view(
             self.mode,
             ui::keyhints::KeyhintContext {
                 has_rows: self.idle_row_count() > 0,
@@ -2024,8 +2188,31 @@ impl Slashpad {
                 skill_locked: self.locked_skill().is_some(),
                 project_path_display: display_project_path(&self.project_path),
                 pinned: self.pinned.is_some(),
+                session_menu_open: self.session_menu_open,
+                can_open_options,
             },
         ));
+
+        // Always wrap the body in a two-layer stack so the widget-tree
+        // path of the idle list's scrollable stays stable across
+        // menu-open/close transitions. Swapping the root widget type
+        // (Column ↔ Stack) makes iced throw away child state keyed by
+        // tree position — in particular the scrollable's scroll offset,
+        // which caused the list to jump to the top when ⌘K toggled.
+        // Layer 1 is the menu when open, or a zero-size Space that
+        // doesn't intercept clicks when closed.
+        let overlay: Element<'_, Message> = if self.session_menu_open {
+            ui::session_options_menu::view(
+                0,
+                self.selected_row_session_id().is_some(),
+            )
+        } else {
+            Space::new(iced::Length::Fixed(0.0), iced::Length::Fixed(0.0)).into()
+        };
+        let layered: Element<'_, Message> = iced::widget::stack![body, overlay]
+            .width(iced::Length::Fill)
+            .height(iced::Length::Fill)
+            .into();
 
         // Unified rounded card: one SURFACE_1 surface + one SURFACE_3
         // border around the whole stack. Individual sections (input,
@@ -2039,7 +2226,7 @@ impl Slashpad {
         // `input + keyhints`, leaving a tiny palette floating inside a
         // 500px transparent window — which is the "wrong height" the
         // user sees on first summon.
-        let card = container(stack)
+        let card = container(layered)
             .width(iced::Length::Fill)
             .height(iced::Length::Fill)
             .style(|_theme: &iced::Theme| iced::widget::container::Style {
@@ -2558,9 +2745,10 @@ impl Slashpad {
     }
 
     /// Past sessions filtered to exclude any already represented as an
-    /// active chat (by `session_id` match). Returned as owned clones
-    /// because borrow-lifetime rules for `&self` + later mutations
-    /// through `handle_submit` etc. are simpler with owned rows.
+    /// active chat (by `session_id` match) and any tagged as archived.
+    /// Returned as owned clones because borrow-lifetime rules for
+    /// `&self` + later mutations through `handle_submit` etc. are
+    /// simpler with owned rows.
     fn past_session_rows(&self) -> Vec<SessionInfo> {
         let active_ids: std::collections::HashSet<&str> = self
             .chats
@@ -2570,8 +2758,24 @@ impl Slashpad {
         self.recent_sessions
             .iter()
             .filter(|s| !active_ids.contains(s.session_id.as_str()))
+            .filter(|s| !is_archived(s.tag.as_deref()))
             .cloned()
             .collect()
+    }
+
+    /// Session id of the currently-selected idle-list row, if any.
+    /// `None` for an active chat that hasn't received its `session_id`
+    /// from the sidecar yet — in that state archive / options are not
+    /// yet available.
+    fn selected_row_session_id(&self) -> Option<String> {
+        let rows = self.build_idle_rows();
+        match rows.get(self.selected_idle_index)? {
+            IdleRowSelection::Active(chat_id) => self
+                .chats
+                .get(chat_id)
+                .and_then(|e| e.state.session_id.clone()),
+            IdleRowSelection::Past(info) => Some(info.session_id.clone()),
+        }
     }
 
     /// The current fuzzy-filter query for the idle list. Empty string
