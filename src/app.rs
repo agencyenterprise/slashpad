@@ -971,7 +971,8 @@ impl Slashpad {
                     self.mode = Mode::Skills;
                     self.selected_skill_index = 0;
                 } else {
-                    if self.mode == Mode::Skills {
+                    let entering_idle = self.mode == Mode::Skills;
+                    if entering_idle {
                         self.mode = Mode::Idle;
                         self.filtered_skills.clear();
                     }
@@ -983,6 +984,13 @@ impl Slashpad {
                     // the user arrow-keys into the filtered list.
                     self.selected_idle_index = 0;
                     self.idle_selection_active = self.input.is_empty();
+                    if entering_idle {
+                        return snap_to_selection(
+                            IDLE_LIST_SCROLL_ID.clone(),
+                            0,
+                            self.idle_row_count(),
+                        );
+                    }
                 }
                 Task::none()
             }
@@ -1009,7 +1017,7 @@ impl Slashpad {
                 // idle selection so Enter resumes the top row.
                 self.selected_idle_index = 0;
                 self.idle_selection_active = true;
-                Task::none()
+                snap_to_selection(IDLE_LIST_SCROLL_ID.clone(), 0, self.idle_row_count())
             }
 
             Message::Submit => self.handle_submit(),
@@ -1055,7 +1063,10 @@ impl Slashpad {
                     self.selected_project_index = 0;
                     self.selected_idle_index = 0;
                     self.idle_selection_active = self.input.is_empty();
-                    return text_input::focus(INPUT_ID.clone());
+                    return Task::batch([
+                        text_input::focus(INPUT_ID.clone()),
+                        snap_to_selection(IDLE_LIST_SCROLL_ID.clone(), 0, self.idle_row_count()),
+                    ]);
                 }
                 // In Chatting mode, Esc steps back to the idle thread
                 // list instead of dismissing. The sidecar keeps streaming
