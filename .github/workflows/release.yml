@@ -92,9 +92,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp target/${{ matrix.target }}/release/slashpad slashpad-darwin-${{ matrix.arch }}
           gh release upload "${{ github.event.release.tag_name }}" \
-            slashpad-darwin-${{ matrix.arch }} \
             build/Slashpad-darwin-${{ matrix.arch }}.zip \
             build/Slashpad-darwin-${{ matrix.arch }}.dmg \
             --clobber

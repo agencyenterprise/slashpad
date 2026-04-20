@@ -85,54 +85,11 @@ fn display_project_path(path: &std::path::Path) -> String {
 
 /// Pin the chat scrollable to the bottom. Runs against the *next* laid-out
 /// frame, so it sees freshly appended content and lands at y=content_end.
-/// Resolve the full path to `brew`. Needed because launchd services
-/// don't inherit the user's shell PATH.
-fn find_brew() -> Option<&'static str> {
-    ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-        .into_iter()
-        .find(|path| std::path::Path::new(path).exists())
-}
-
-/// True when the running binary is inside a `.app` bundle.
-fn is_app_bundle() -> bool {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.canonicalize().ok())
-        .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
-        .unwrap_or(false)
-}
-
 /// Return the `.app` bundle directory path (e.g. `/Applications/Slashpad.app`).
 fn app_bundle_path() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
     // Walk up from .../Slashpad.app/Contents/MacOS/slashpad to .../Slashpad.app
     exe.parent()?.parent()?.parent().map(|p| p.to_path_buf())
-}
-
-/// Run `brew update && brew upgrade slashpad`.
-async fn brew_upgrade() -> Result<(), String> {
-    let brew = find_brew()
-        .ok_or_else(|| "brew not found — install Homebrew or upgrade manually".to_string())?;
-
-    let update = tokio::process::Command::new(brew)
-        .arg("update")
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !update.status.success() {
-        return Err(String::from_utf8_lossy(&update.stderr).to_string());
-    }
-
-    let upgrade = tokio::process::Command::new(brew)
-        .args(["upgrade", "slashpad"])
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !upgrade.status.success() {
-        return Err(String::from_utf8_lossy(&upgrade.stderr).to_string());
-    }
-
-    Ok(())
 }
 
 /// Extract the downloaded .app zip and replace the current bundle.
@@ -670,7 +627,7 @@ pub enum UpdateStatus {
         version: String,
         download_url: Option<String>,
     },
-    /// Upgrade in progress (downloading or brew upgrading).
+    /// Upgrade in progress (downloading and replacing the .app bundle).
     Upgrading,
 }
 
@@ -1467,64 +1424,40 @@ impl Slashpad {
 
                 self.update_status = UpdateStatus::Upgrading;
 
-                if is_app_bundle() {
-                    if let Some(url) = download_url {
-                        // .app install: download the new .app zip, replace, relaunch.
-                        let bundle_path = app_bundle_path();
-                        Task::perform(
-                            async move {
-                                let zip_path =
-                                    crate::updates::download_update(&url).await?;
-                                // replace_app_bundle is blocking (runs unzip),
-                                // so move it off the async executor.
-                                tokio::task::spawn_blocking(move || {
-                                    replace_app_bundle(&zip_path, bundle_path.as_deref())
-                                })
-                                .await
-                                .map_err(|e| format!("spawn_blocking failed: {e}"))?
-                            },
-                            Message::UpgradeFinished,
-                        )
-                    } else {
-                        // No .app zip available — fall back to brew.
-                        Task::perform(brew_upgrade(), Message::UpgradeFinished)
-                    }
-                } else {
-                    // Homebrew install.
-                    Task::perform(brew_upgrade(), Message::UpgradeFinished)
-                }
+                let Some(url) = download_url else {
+                    eprintln!("[slashpad] upgrade clicked but no download URL available");
+                    self.update_status = UpdateStatus::Idle;
+                    return Task::none();
+                };
+
+                // Download the new .app zip, replace the current bundle, relaunch.
+                let bundle_path = app_bundle_path();
+                Task::perform(
+                    async move {
+                        let zip_path = crate::updates::download_update(&url).await?;
+                        // replace_app_bundle is blocking (runs unzip),
+                        // so move it off the async executor.
+                        tokio::task::spawn_blocking(move || {
+                            replace_app_bundle(&zip_path, bundle_path.as_deref())
+                        })
+                        .await
+                        .map_err(|e| format!("spawn_blocking failed: {e}"))?
+                    },
+                    Message::UpgradeFinished,
+                )
             }
 
             Message::UpgradeFinished(result) => {
                 match result {
                     Ok(()) => {
                         self.chats.clear();
-                        if is_app_bundle() {
-                            // Relaunch the .app via `open` for clean AppKit state.
-                            if let Some(path) = app_bundle_path() {
-                                let _ = std::process::Command::new("open")
-                                    .arg(path)
-                                    .spawn();
-                            }
-                            std::process::exit(0);
-                        } else {
-                            // Homebrew: spawn a detached restart, then exit.
-                            if let Some(brew) = find_brew() {
-                                use std::process::Stdio;
-                                let _ = std::process::Command::new("sh")
-                                    .args([
-                                        "-c",
-                                        &format!(
-                                            "sleep 2 && {brew} services restart slashpad"
-                                        ),
-                                    ])
-                                    .stdin(Stdio::null())
-                                    .stdout(Stdio::null())
-                                    .stderr(Stdio::null())
-                                    .spawn();
-                            }
-                            std::process::exit(0);
+                        // Relaunch the .app via `open` for clean AppKit state.
+                        if let Some(path) = app_bundle_path() {
+                            let _ = std::process::Command::new("open")
+                                .arg(path)
+                                .spawn();
                         }
+                        std::process::exit(0);
                     }
                     Err(e) => {
                         eprintln!("[slashpad] upgrade failed: {e}");
@@ -1845,30 +1778,6 @@ impl Slashpad {
                 // children. Bypasses iced's graceful shutdown because
                 // that path is fiddly with our NSPanel wrapping.
                 self.chats.clear();
-
-                // Unload the launchctl service so `brew services start`
-                // works again without hitting "Bootstrap failed: 5".
-                // Only runs when managed by brew services (plist exists).
-                if let Some(home) = std::env::var_os("HOME") {
-                    let plist = std::path::Path::new(&home)
-                        .join("Library/LaunchAgents/homebrew.mxcl.slashpad.plist");
-                    if plist.exists() {
-                        let uid = std::process::Command::new("id")
-                            .arg("-u")
-                            .output()
-                            .ok()
-                            .and_then(|o| String::from_utf8(o.stdout).ok())
-                            .unwrap_or_default()
-                            .trim()
-                            .to_string();
-                        if !uid.is_empty() {
-                            let _ = std::process::Command::new("/bin/launchctl")
-                                .args(["bootout", &format!("gui/{uid}"), &plist.to_string_lossy()])
-                                .status();
-                        }
-                    }
-                }
-
                 std::process::exit(0)
             }
 
@@ -2376,7 +2285,6 @@ impl Slashpad {
                 self.settings.load_user_settings,
                 &self.update_status,
                 self.settings.launch_at_login,
-                is_app_bundle(),
             ))
             .padding(8)
             .width(iced::Length::Fill)

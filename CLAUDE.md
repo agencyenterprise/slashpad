@@ -25,7 +25,7 @@ There are no automated tests.
 
 **Two runtimes:**
 - **Rust binary** (`src/`): UI (iced + winit + wgpu), state machine, window management, global hotkey, NSPanel wrapping, sidecar process management.
-- **JS sidecar** (`agent/runner.mjs`): Runs `@anthropic-ai/claude-agent-sdk` in a spawned child process. Communicates with the Rust side via JSONL on stdin/stdout. Bun is bundled in Homebrew installs; falls back to `node` in dev.
+- **JS sidecar** (`agent/runner.mjs`): Runs `@anthropic-ai/claude-agent-sdk` in a spawned child process. Communicates with the Rust side via JSONL on stdin/stdout. Bun is bundled inside the `.app`; falls back to `node` in dev.
 
 **Module layout** (`src/`):
 - `main.rs` — entry point. Builds a tokio runtime, enters it, seeds bundled skills, sets macOS activation policy, starts iced.
@@ -95,5 +95,4 @@ Dark theme defined in `src/ui/theme.rs`. Colors ported 1:1 from the old Tailwind
 
 - Running NSPanel/NSWindow ops from background threads without `dispatch_main_async`.
 - Calling `take()` on `EXTERNAL_RX` outside the subscription stream (it's single-use).
-- Modifying `agent/runner.mjs` — it's the pre-rewrite sidecar and the only supported bridge to the Claude Agent SDK.
 - Deleting `bundled-skills/skill-creator/` — the `include_dir!` macro in `src/skills.rs` requires it at compile time.

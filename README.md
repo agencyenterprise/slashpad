@@ -6,21 +6,20 @@ Press the global hotkey (default **Ctrl+Space**) → type a command or prompt �
 
 ## Install
 
-```bash
-brew install agencyenterprise/tap/slashpad
-brew services start slashpad
-```
+Download the latest release (macOS, signed & notarized):
 
-Then press **Ctrl+Space** to open the palette. You can change the hotkey in Settings (click the tray menu icon).
+- [**Slashpad for Apple Silicon**](https://github.com/agencyenterprise/slashpad/releases/latest/download/Slashpad-darwin-aarch64.dmg) (M1/M2/M3/M4)
+- [**Slashpad for Intel**](https://github.com/agencyenterprise/slashpad/releases/latest/download/Slashpad-darwin-x86_64.dmg)
+
+Open the DMG, drag **Slashpad** to your Applications folder, and launch it. Press **Ctrl+Space** to open the palette. You can change the hotkey in Settings (click the tray menu icon).
 
 > macOS only. The JS runtime (Bun) is bundled automatically.
 
+See [all releases](https://github.com/agencyenterprise/slashpad/releases) for release notes and older versions.
+
 ## Updating
 
-```bash
-brew update && brew upgrade slashpad
-brew services restart slashpad
-```
+Slashpad checks for updates automatically and prompts you when a new release is available. You can also grab the latest DMG manually from the [releases page](https://github.com/agencyenterprise/slashpad/releases/latest).
 
 If you built from source, pull the latest and rebuild:
 
@@ -120,7 +119,7 @@ Claude handles installing Composio and linking your accounts automatically. The 
 ```
 
 - **Rust GUI** — iced framework on winit + wgpu. No webview, no Electron.
-- **JS sidecar** — wraps the Claude Agent SDK (no Rust SDK exists). Bun is bundled in Homebrew installs. Communicates via JSONL over stdin/stdout.
+- **JS sidecar** — wraps the Claude Agent SDK (no Rust SDK exists). Bun is bundled inside the `.app`. Communicates via JSONL over stdin/stdout.
 - **macOS NSPanel** — the floating palette appears over full-screen apps, across all spaces.
 
 ## Building from source

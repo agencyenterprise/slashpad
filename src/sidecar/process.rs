@@ -38,7 +38,7 @@ pub fn runner_path() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    // 2. Relative to the binary — check both .app bundle and Homebrew layouts.
+    // 2. Relative to the binary — .app bundle layout.
     if let Ok(exe) = std::env::current_exe() {
         if let Ok(canonical) = exe.canonicalize() {
             if let Some(exe_dir) = canonical.parent() {
@@ -46,11 +46,6 @@ pub fn runner_path() -> PathBuf {
                 let bundle_path = exe_dir.join("../Resources/agent/runner.mjs");
                 if bundle_path.exists() {
                     return bundle_path;
-                }
-                // Homebrew: <prefix>/bin/slashpad → <prefix>/libexec/agent/runner.mjs
-                let libexec_path = exe_dir.join("../libexec/agent/runner.mjs");
-                if libexec_path.exists() {
-                    return libexec_path;
                 }
             }
         }
@@ -65,7 +60,7 @@ pub fn runner_path() -> PathBuf {
 ///
 /// Priority:
 /// 1. `SLASHPAD_RUNTIME` env var — explicit override.
-/// 2. `../libexec/bin/bun` relative to this executable — Homebrew layout.
+/// 2. Bundled `bun` inside the `.app`.
 /// 3. `bun` on PATH — developer machines with bun installed.
 /// 4. `node` on PATH — legacy fallback.
 fn runtime_path() -> PathBuf {
@@ -80,11 +75,6 @@ fn runtime_path() -> PathBuf {
                 let bundle_bun = exe_dir.join("../Resources/bin/bun");
                 if bundle_bun.exists() {
                     return bundle_bun;
-                }
-                // Homebrew: <prefix>/bin/slashpad → <prefix>/libexec/bin/bun
-                let bundled = exe_dir.join("../libexec/bin/bun");
-                if bundled.exists() {
-                    return bundled;
                 }
             }
         }

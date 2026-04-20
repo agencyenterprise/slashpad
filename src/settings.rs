@@ -149,8 +149,7 @@ pub struct AppSettings {
     /// no longer exists on disk is ignored at load time.
     #[serde(default, rename = "selectedProjectPath")]
     pub selected_project_path: Option<String>,
-    /// When true, Slashpad launches automatically at login. Only
-    /// applicable to `.app` installs (Homebrew uses `brew services`).
+    /// When true, Slashpad launches automatically at login.
     #[serde(default, rename = "launchAtLogin")]
     pub launch_at_login: bool,
     /// User-pinned skills, keyed by skill name. Value is the unix-millis

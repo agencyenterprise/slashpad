@@ -38,7 +38,7 @@ const CURRENT: &str = env!("CARGO_PKG_VERSION");
 /// - Prerelease build (e.g. `0.1.13-pre.1`): considers ALL releases,
 ///   so the user sees both newer prereleases and stable promotions.
 /// - Stable build (e.g. `0.1.13`): only considers stable releases,
-///   so users on the Homebrew tap never get pointed at a prerelease.
+///   so users never get pointed at a prerelease.
 pub async fn check_for_update() -> Option<UpdateInfo> {
     let client = reqwest::Client::builder()
         .user_agent("slashpad-update-check")
