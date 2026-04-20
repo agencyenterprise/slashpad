@@ -33,6 +33,10 @@ static PROJECT_PICKER_SCROLL_ID: LazyLock<scrollable::Id> =
 static CHAT_SCROLL_ID: LazyLock<scrollable::Id> =
     LazyLock::new(scrollable::Id::unique);
 
+/// Number of rows in the ⌘K actions menu. Pin/Unpin at index 0,
+/// Archive at index 1. Used for arrow-key bounds checking.
+pub const SESSION_MENU_ROW_COUNT: usize = 2;
+
 /// Snap a scrollable so the row at `index` (in a list of `count`) is visible.
 /// Uses a fractional offset: index 0 -> top, last index -> bottom.
 fn snap_to_selection(id: scrollable::Id, index: usize, count: usize) -> Task<Message> {
@@ -184,8 +188,8 @@ use crate::settings::{AppSettings, PreferredTerminal};
 use crate::sidecar::{self, FollowUp, Payload, SidecarEvent, SpawnedSidecar};
 use crate::skills;
 use crate::state::{
-    is_archived, ChatId, ChatMessageView, ChatState, ChatStatus, Mode, Pin, SessionInfo, Skill,
-    TAG_ARCHIVED,
+    is_archived, is_pinned, new_pin_tag, pin_timestamp, ChatId, ChatMessageView, ChatState,
+    ChatStatus, Mode, Pin, SessionInfo, Skill, TAG_ARCHIVED,
 };
 use crate::ui;
 
@@ -466,9 +470,13 @@ pub enum Message {
     /// over the selected row. No-op when no row is selected or when
     /// the selected row has no `session_id` to tag.
     ToggleSessionMenu,
-    /// ↵ while the options menu is open — tag the selected row's
-    /// session as archived and (for active chats) close the chat.
+    /// ↵ while the options menu is open with Archive highlighted —
+    /// tag the selected row's session as archived and (for active
+    /// chats) close the chat.
     ArchiveSelectedRow,
+    /// ↵ while the options menu is open with Pin highlighted — toggle
+    /// the pinned tag on the selected row's session.
+    TogglePinSelectedRow,
     /// Async result from `sessions::tag_session`. `Ok` triggers a
     /// refresh of the session list; `Err` restores the row.
     SessionTagged(Result<(), String>),
@@ -512,9 +520,12 @@ pub struct Slashpad {
     /// sessions — used for up/down nav in Mode::Idle.
     pub selected_idle_index: usize,
     /// True when the floating actions submenu (⌘K) is open over the
-    /// idle list. While open, `↵` archives the selected row and
+    /// idle list. While open, `↵` runs the highlighted action and
     /// `esc` / `⌘K` dismiss the menu without changing the selection.
     pub session_menu_open: bool,
+    /// Which row within the options menu is highlighted. 0 = Pin/Unpin,
+    /// 1 = Archive. Reset to 0 on menu open/close.
+    pub session_menu_selected: usize,
     /// Has the user moved into the idle list via ↑/↓? Controls whether
     /// Enter with a non-empty input resumes the highlighted row (true)
     /// or starts a new chat with the typed text (false). Always true
@@ -683,6 +694,7 @@ impl Slashpad {
             recent_sessions: Vec::new(),
             selected_idle_index: 0,
             session_menu_open: false,
+            session_menu_selected: 0,
             idle_selection_active: true,
             api_key_input: String::new(),
             settings,
@@ -1045,7 +1057,10 @@ impl Slashpad {
                 // path. This lets the menu feel like a modal overlay
                 // without a separate key-handling layer.
                 if self.session_menu_open {
-                    return self.dispatch_update(Message::ArchiveSelectedRow);
+                    return self.dispatch_update(match self.session_menu_selected {
+                        0 => Message::TogglePinSelectedRow,
+                        _ => Message::ArchiveSelectedRow,
+                    });
                 }
                 self.handle_submit()
             }
@@ -1071,6 +1086,7 @@ impl Slashpad {
                 // precedence over every other Esc behavior.
                 if self.session_menu_open {
                     self.session_menu_open = false;
+                    self.session_menu_selected = 0;
                     return Task::none();
                 }
                 // If a hotkey recording is in progress, Esc cancels the
@@ -1147,12 +1163,13 @@ impl Slashpad {
             }
 
             Message::NavUp => {
-                // Swallow arrow keys while the options menu is open.
-                // The menu has a single item today, so there's nothing
-                // to move the cursor to — but we also don't want the
-                // keystroke to leak through and shift the idle-list
-                // selection behind the menu.
+                // While the options menu is open, arrow keys move
+                // within the menu rows (0 = Pin/Unpin, 1 = Archive)
+                // and never leak through to the idle list behind it.
                 if self.session_menu_open {
+                    if self.session_menu_selected > 0 {
+                        self.session_menu_selected -= 1;
+                    }
                     return Task::none();
                 }
                 match self.mode {
@@ -1202,6 +1219,9 @@ impl Slashpad {
 
             Message::NavDown => {
                 if self.session_menu_open {
+                    if self.session_menu_selected < SESSION_MENU_ROW_COUNT - 1 {
+                        self.session_menu_selected += 1;
+                    }
                     return Task::none();
                 }
                 match self.mode {
@@ -1860,6 +1880,7 @@ impl Slashpad {
                 // rather than doing something surprising.
                 if self.session_menu_open {
                     self.session_menu_open = false;
+                    self.session_menu_selected = 0;
                     return Task::none();
                 }
                 if self.mode != Mode::Idle
@@ -1869,12 +1890,13 @@ impl Slashpad {
                 {
                     return Task::none();
                 }
-                // Require a tagable session — archiving is the only
-                // action right now, and it needs a session_id.
+                // Every action needs a session_id to tag, so gate the
+                // whole menu on the selected row having one.
                 if self.selected_row_session_id().is_none() {
                     return Task::none();
                 }
                 self.session_menu_open = true;
+                self.session_menu_selected = 0;
                 Task::none()
             }
 
@@ -1887,6 +1909,7 @@ impl Slashpad {
                 let selected = rows.get(self.selected_idle_index).cloned();
                 let Some(row) = selected else {
                     self.session_menu_open = false;
+                    self.session_menu_selected = 0;
                     return Task::none();
                 };
                 let (session_id, archived_chat_id) = match &row {
@@ -1904,6 +1927,7 @@ impl Slashpad {
                     // impossible. Close the menu so the user knows the
                     // action didn't fire.
                     self.session_menu_open = false;
+                    self.session_menu_selected = 0;
                     return Task::none();
                 };
 
@@ -1932,6 +1956,7 @@ impl Slashpad {
                 }
 
                 self.session_menu_open = false;
+                self.session_menu_selected = 0;
 
                 let cwd = self.project_path.clone();
                 let sid_for_task = session_id.clone();
@@ -1941,6 +1966,78 @@ impl Slashpad {
                             &cwd,
                             &sid_for_task,
                             Some(TAG_ARCHIVED),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())
+                    },
+                    Message::SessionTagged,
+                )
+            }
+
+            Message::TogglePinSelectedRow => {
+                let rows = self.build_idle_rows();
+                let selected = rows.get(self.selected_idle_index).cloned();
+                let Some(row) = selected else {
+                    self.session_menu_open = false;
+                    self.session_menu_selected = 0;
+                    return Task::none();
+                };
+                let session_id = match &row {
+                    IdleRowSelection::Active(chat_id) => self
+                        .chats
+                        .get(chat_id)
+                        .and_then(|e| e.state.session_id.clone()),
+                    IdleRowSelection::Past(info) => Some(info.session_id.clone()),
+                };
+                let Some(session_id) = session_id else {
+                    self.session_menu_open = false;
+                    self.session_menu_selected = 0;
+                    return Task::none();
+                };
+
+                // Read current pin state from the recent_sessions cache
+                // — active chats borrow their tag from whichever past
+                // session shares their session_id. If the SDK list
+                // hasn't returned yet for an in-flight chat, treat it
+                // as unpinned (pin will set it on the next refresh).
+                let currently_pinned = self
+                    .recent_sessions
+                    .iter()
+                    .find(|s| s.session_id == session_id)
+                    .map(|s| is_pinned(s.tag.as_deref()))
+                    .unwrap_or(false);
+                // Timestamp the pin so the pinned block sorts newest
+                // pin to the bottom. Passing `None` clears the tag
+                // and unpins.
+                let new_tag: Option<String> = if currently_pinned {
+                    None
+                } else {
+                    Some(new_pin_tag())
+                };
+
+                // Optimistic local update so the 📌 + reordering happen
+                // before the sidecar round-trip. `refresh_sessions()`
+                // on SessionTagged reconciles against the SDK.
+                if let Some(info) = self
+                    .recent_sessions
+                    .iter_mut()
+                    .find(|s| s.session_id == session_id)
+                {
+                    info.tag = new_tag.clone();
+                }
+
+                self.session_menu_open = false;
+                self.session_menu_selected = 0;
+
+                let cwd = self.project_path.clone();
+                let sid_for_task = session_id.clone();
+                let tag_for_task = new_tag;
+                Task::perform(
+                    async move {
+                        crate::sessions::tag_session(
+                            &cwd,
+                            &sid_for_task,
+                            tag_for_task.as_deref(),
                         )
                         .await
                         .map_err(|e| e.to_string())
@@ -2109,18 +2206,45 @@ impl Slashpad {
                 // live fuzzy filter (idle_filter_query); past sessions
                 // also exclude any session_id already represented by an
                 // active chat.
+                // Build pin-first ordering that matches the selection
+                // list from `build_idle_rows()` exactly so arrow-key
+                // indices stay aligned with what the user sees.
+                // Within pinned, sort oldest-pin-first so the most
+                // recently pinned item lands at the bottom.
                 let visible_chat_ids = self.visible_active_chat_ids();
                 let visible_past = self.visible_past_session_rows();
-                let mut rows: Vec<ui::idle_list::IdleRow<'_>> =
-                    Vec::with_capacity(visible_chat_ids.len() + visible_past.len());
+                let capacity = visible_chat_ids.len() + visible_past.len();
+                let mut pinned_rows: Vec<(i64, ui::idle_list::IdleRow<'_>)> =
+                    Vec::with_capacity(capacity);
+                let mut rest_rows: Vec<ui::idle_list::IdleRow<'_>> =
+                    Vec::with_capacity(capacity);
                 for id in &visible_chat_ids {
                     if let Some(entry) = self.chats.get(id) {
-                        rows.push(ui::idle_list::IdleRow::Active(entry));
+                        let sid = entry.state.session_id.as_deref();
+                        let is_pin = sid.map(|s| self.session_is_pinned(s)).unwrap_or(false);
+                        let ts = sid.and_then(|s| self.session_pin_timestamp(s)).unwrap_or(0);
+                        let row = ui::idle_list::IdleRow::Active { entry, pinned: is_pin };
+                        if is_pin {
+                            pinned_rows.push((ts, row));
+                        } else {
+                            rest_rows.push(row);
+                        }
                     }
                 }
                 for session in visible_past {
-                    rows.push(ui::idle_list::IdleRow::Past(session));
+                    let is_pin = is_pinned(session.tag.as_deref());
+                    let ts = pin_timestamp(session.tag.as_deref()).unwrap_or(0);
+                    let row = ui::idle_list::IdleRow::Past { session, pinned: is_pin };
+                    if is_pin {
+                        pinned_rows.push((ts, row));
+                    } else {
+                        rest_rows.push(row);
+                    }
                 }
+                pinned_rows.sort_by_key(|(ts, _)| *ts);
+                let mut rows: Vec<ui::idle_list::IdleRow<'_>> =
+                    pinned_rows.into_iter().map(|(_, r)| r).collect();
+                rows.extend(rest_rows);
                 let selected = if self.idle_selection_active {
                     self.selected_idle_index
                 } else {
@@ -2190,6 +2314,8 @@ impl Slashpad {
                 pinned: self.pinned.is_some(),
                 session_menu_open: self.session_menu_open,
                 can_open_options,
+                session_menu_selected: self.session_menu_selected,
+                selected_is_pinned: self.selected_row_is_pinned(),
             },
         ));
 
@@ -2203,8 +2329,9 @@ impl Slashpad {
         // doesn't intercept clicks when closed.
         let overlay: Element<'_, Message> = if self.session_menu_open {
             ui::session_options_menu::view(
-                0,
+                self.session_menu_selected,
                 self.selected_row_session_id().is_some(),
+                self.selected_row_is_pinned(),
             )
         } else {
             Space::new(iced::Length::Fixed(0.0), iced::Length::Fixed(0.0)).into()
@@ -2778,6 +2905,40 @@ impl Slashpad {
         }
     }
 
+    /// True when the selected row's session is tagged as pinned.
+    /// Used by the options menu to swap between "Pin session" and
+    /// "Unpin session" as the top action.
+    fn selected_row_is_pinned(&self) -> bool {
+        let Some(sid) = self.selected_row_session_id() else {
+            return false;
+        };
+        self.session_is_pinned(&sid)
+    }
+
+    /// Lookup a session's pinned state from `recent_sessions`. Active
+    /// chats share their tag with the corresponding past SessionInfo
+    /// by session_id match. Returns false if the SDK list hasn't
+    /// returned that session yet (treat as unpinned).
+    fn session_is_pinned(&self, session_id: &str) -> bool {
+        self.recent_sessions
+            .iter()
+            .find(|s| s.session_id == session_id)
+            .map(|s| is_pinned(s.tag.as_deref()))
+            .unwrap_or(false)
+    }
+
+    /// Pin timestamp (unix millis) for a session, if its tag carries
+    /// one. Used to sort within the pinned block — oldest-pin-first
+    /// so a freshly-pinned item lands at the bottom.
+    fn session_pin_timestamp(&self, session_id: &str) -> Option<i64> {
+        pin_timestamp(
+            self.recent_sessions
+                .iter()
+                .find(|s| s.session_id == session_id)
+                .and_then(|s| s.tag.as_deref()),
+        )
+    }
+
     /// The current fuzzy-filter query for the idle list. Empty string
     /// when the input is empty, `/`-prefixed (skills mode), or we're
     /// not in Idle. Callers pass this into `filter_sessions` and the
@@ -2825,15 +2986,45 @@ impl Slashpad {
     /// `handle_submit` to map `selected_idle_index` to either a
     /// ChatId or a past SessionInfo. The analogous `build_idle_rows`
     /// produces the view-layer rows with references.
+    ///
+    /// Pinned rows float to the top. Within the pinned block, order
+    /// is oldest-pin-first / newest-pin-last (so the item the user
+    /// just pinned lands at the bottom of the pinned group). Unpinned
+    /// rows keep their original order (active chats first, then past
+    /// sessions by recent activity).
     fn build_idle_rows(&self) -> Vec<IdleRowSelection> {
-        let mut rows: Vec<IdleRowSelection> = Vec::with_capacity(self.idle_row_count());
+        let capacity = self.idle_row_count();
+        let mut pinned: Vec<(i64, IdleRowSelection)> = Vec::with_capacity(capacity);
+        let mut rest: Vec<IdleRowSelection> = Vec::with_capacity(capacity);
         for id in self.visible_active_chat_ids() {
-            rows.push(IdleRowSelection::Active(id));
+            let sid = self
+                .chats
+                .get(&id)
+                .and_then(|e| e.state.session_id.as_deref())
+                .map(|s| s.to_string());
+            let pin_ts = sid.as_deref().and_then(|s| self.session_pin_timestamp(s));
+            let is_pin = sid
+                .as_deref()
+                .map(|s| self.session_is_pinned(s))
+                .unwrap_or(false);
+            if is_pin {
+                pinned.push((pin_ts.unwrap_or(0), IdleRowSelection::Active(id)));
+            } else {
+                rest.push(IdleRowSelection::Active(id));
+            }
         }
         for session in self.visible_past_session_rows() {
-            rows.push(IdleRowSelection::Past(session));
+            if is_pinned(session.tag.as_deref()) {
+                let ts = pin_timestamp(session.tag.as_deref()).unwrap_or(0);
+                pinned.push((ts, IdleRowSelection::Past(session)));
+            } else {
+                rest.push(IdleRowSelection::Past(session));
+            }
         }
-        rows
+        pinned.sort_by_key(|(ts, _)| *ts);
+        let mut out: Vec<IdleRowSelection> = pinned.into_iter().map(|(_, r)| r).collect();
+        out.extend(rest);
+        out
     }
 
     fn refresh_sessions(&self) -> Task<Message> {

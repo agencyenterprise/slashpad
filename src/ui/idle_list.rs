@@ -13,11 +13,19 @@ use crate::state::{ChatStatus, SessionInfo};
 /// One row in the unified idle list.
 pub enum IdleRow<'a> {
     /// A chat running (or completed) in this process.
-    Active(&'a ChatEntry),
+    Active {
+        entry: &'a ChatEntry,
+        /// True when the row's underlying session is tagged pinned.
+        /// Render a 📌 prefix and caller floats it to the top.
+        pinned: bool,
+    },
     /// A session loaded from disk that isn't also open as an active
     /// chat. Owned because the caller builds a fuzzy-filtered Vec —
     /// borrowing from that Vec's lifetime would escape the view fn.
-    Past(SessionInfo),
+    Past {
+        session: SessionInfo,
+        pinned: bool,
+    },
 }
 
 pub fn view<'a>(
@@ -40,7 +48,7 @@ pub fn view<'a>(
         let is_first = i == 0;
         let is_last = i == last;
         let (row_el, msg) = match row_item {
-            IdleRow::Active(entry) => {
+            IdleRow::Active { entry, pinned } => {
                 let title = entry.state.title.clone();
                 let status_label = status_text(
                     entry.state.status,
@@ -51,7 +59,7 @@ pub fn view<'a>(
                 let row = row![
                     text(title)
                         .size(13)
-                        .color(super::theme::TEXT)
+                        .color(title_color(pinned))
                         .width(Length::FillPortion(4)),
                     text(status_label)
                         .size(11)
@@ -62,12 +70,12 @@ pub fn view<'a>(
                 .align_y(iced::Alignment::Center);
                 (row, Message::SelectChat(entry.state.id))
             }
-            IdleRow::Past(session) => {
+            IdleRow::Past { session, pinned } => {
                 let time = format_relative(session.last_modified);
                 let row = row![
                     text(session.summary.clone())
                         .size(13)
-                        .color(super::theme::TEXT)
+                        .color(title_color(pinned))
                         .width(Length::FillPortion(4)),
                     text(time)
                         .size(11)
@@ -145,6 +153,18 @@ pub fn view<'a>(
 /// dividers above and below.
 fn selection_radius(_is_first: bool, _is_last: bool) -> iced::border::Radius {
     0.0.into()
+}
+
+/// Title color for an idle-list row. Pinned rows render in accent
+/// purple — the only visual cue that a row is pinned, replacing the
+/// earlier inline pin glyph so the timestamp/status column stays
+/// intact for every row.
+fn title_color(pinned: bool) -> iced::Color {
+    if pinned {
+        super::theme::ACCENT
+    } else {
+        super::theme::TEXT
+    }
 }
 
 fn status_text(status: ChatStatus, spinner_frame: u32, last_activity_ms: i64) -> String {

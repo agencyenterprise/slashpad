@@ -29,18 +29,32 @@ const RIGHT_INSET: f32 = 12.0;
 /// placed as the second child of an `iced::widget::stack` where the
 /// first child is the ordinary palette body.
 ///
-/// `can_archive` is false when the currently-selected row is an active
-/// chat that hasn't received a `session_id` yet — archiving requires a
-/// session id to tag, so the item is disabled in that state.
-pub fn view(selected: usize, can_archive: bool) -> Element<'static, Message> {
+/// `can_act` is false when the selected row has no `session_id` yet —
+/// every action needs a session id to tag, so rows are disabled.
+/// `menu_selected` is the index of the highlighted menu row
+/// (0 = Pin/Unpin, 1 = Archive). `is_pinned` swaps the top row's
+/// label between "Pin session" and "Unpin session".
+pub fn view(menu_selected: usize, can_act: bool, is_pinned: bool) -> Element<'static, Message> {
     let header: Element<'static, Message> = text("Actions")
         .size(10)
         .color(theme::MUTED)
         .into();
 
-    let archive = menu_row("Archive session", selected == 0, can_archive);
+    let pin_label = if is_pinned { "Unpin session" } else { "Pin session" };
+    let pin = menu_row(
+        pin_label,
+        menu_selected == 0,
+        can_act,
+        Message::TogglePinSelectedRow,
+    );
+    let archive = menu_row(
+        "Archive session",
+        menu_selected == 1,
+        can_act,
+        Message::ArchiveSelectedRow,
+    );
 
-    let body: Column<'static, Message> = column![header, archive].spacing(6);
+    let body: Column<'static, Message> = column![header, pin, archive].spacing(6);
 
     let panel: Element<'static, Message> = container(body)
         .padding([8, 10])
@@ -74,7 +88,12 @@ pub fn view(selected: usize, can_archive: bool) -> Element<'static, Message> {
         .into()
 }
 
-fn menu_row(label: &'static str, selected: bool, enabled: bool) -> Element<'static, Message> {
+fn menu_row(
+    label: &'static str,
+    selected: bool,
+    enabled: bool,
+    on_press: Message,
+) -> Element<'static, Message> {
     let color = if enabled { theme::TEXT } else { theme::MUTED };
     let body = row![text(label).size(13).color(color)]
         .spacing(8)
@@ -107,7 +126,7 @@ fn menu_row(label: &'static str, selected: bool, enabled: bool) -> Element<'stat
             ..Default::default()
         });
     if enabled {
-        btn = btn.on_press(Message::ArchiveSelectedRow);
+        btn = btn.on_press(on_press);
     }
     btn.into()
 }

@@ -133,9 +133,42 @@ impl ChatMessageView {
 /// handled by the Claude Agent SDK's `tagSession` — no local registry.
 pub const TAG_ARCHIVED: &str = "archived";
 
+/// Tag prefix for pinned sessions. Stored as `"pinned:<unix_millis>"`
+/// so ordering within the pinned block reflects pin time — most
+/// recently pinned sorts to the bottom. The bare `"pinned"` form is
+/// also recognized as a legacy pin with unknown timestamp.
+pub const TAG_PINNED_PREFIX: &str = "pinned";
+
 /// True when a tag marks a session as archived.
 pub fn is_archived(tag: Option<&str>) -> bool {
     tag == Some(TAG_ARCHIVED)
+}
+
+/// True when a tag marks a session as pinned (either the new
+/// `pinned:<ts>` form or the legacy bare `pinned`).
+pub fn is_pinned(tag: Option<&str>) -> bool {
+    match tag {
+        Some(t) => t == TAG_PINNED_PREFIX || t.starts_with("pinned:"),
+        None => false,
+    }
+}
+
+/// Extract the unix-millis pin timestamp from a `pinned:<ts>` tag.
+/// Returns `None` for legacy bare `pinned` tags — callers sort those
+/// as if pinned at epoch 0 (i.e. above more-recently-pinned items).
+pub fn pin_timestamp(tag: Option<&str>) -> Option<i64> {
+    tag?.strip_prefix("pinned:")?.parse::<i64>().ok()
+}
+
+/// Build a fresh pin tag with the current unix-millis timestamp so
+/// newly-pinned sessions sort to the bottom of the pinned group.
+pub fn new_pin_tag() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    format!("pinned:{millis}")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -55,6 +55,12 @@ pub struct KeyhintContext {
     /// `session_id`. Gates the `⌘K Actions` hint so it only appears
     /// for rows the action can actually target.
     pub can_open_options: bool,
+    /// Which row within the options menu is highlighted. 0 = Pin/Unpin,
+    /// 1 = Archive. Used to pick the ↵ hint label.
+    pub session_menu_selected: usize,
+    /// True when the currently-selected row's session is tagged pinned.
+    /// Flips the Pin/Unpin hint label while the menu is open.
+    pub selected_is_pinned: bool,
 }
 
 /// Fixed footer height reserved for the keyhints bar, used by
@@ -72,8 +78,19 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         let mut bar: Row<'static, Message> =
             Row::new().spacing(12).align_y(iced::Alignment::Center);
         bar = bar.push(hint_item("esc", "Close"));
+        bar = bar.push(hint_item("↑↓", "Navigate"));
         bar = bar.push(horizontal_space().width(Length::Fill));
-        bar = bar.push(hint_item("↵", "Archive"));
+        let action_label = match ctx.session_menu_selected {
+            0 => {
+                if ctx.selected_is_pinned {
+                    "Unpin"
+                } else {
+                    "Pin"
+                }
+            }
+            _ => "Archive",
+        };
+        bar = bar.push(hint_item("↵", action_label));
         return container(bar)
             .padding([6, 12])
             .width(Length::Fill)
