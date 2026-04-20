@@ -69,7 +69,11 @@ if $IS_PRERELEASE; then
     echo "==> Leaving ${TAG} as prerelease"
 else
     echo "==> Promoting ${TAG} to full release..."
-    gh release edit "$TAG" --repo "$REPO" --prerelease=false
+    # --latest explicitly pins this tag as the repo's "Latest" release
+    # so /releases/latest/download/... URLs in the README always resolve
+    # here. Without it, GitHub's default algorithm sometimes sticks on an
+    # older tag that was pinned in the past.
+    gh release edit "$TAG" --repo "$REPO" --prerelease=false --latest
     echo "    Done"
 fi
 
