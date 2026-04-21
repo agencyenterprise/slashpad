@@ -3993,6 +3993,9 @@ impl Slashpad {
         // mode the next time the palette is summoned.
         self.renaming_session_id = None;
         self.rename_input.clear();
+        self.session_menu_open = false;
+        self.session_menu_selected = 0;
+        self.skill_delete_confirm = false;
         let Some(id) = self.palette_window_id else {
             return Task::none();
         };
