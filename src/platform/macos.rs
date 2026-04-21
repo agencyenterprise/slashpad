@@ -448,25 +448,11 @@ fn in_valid_app_bundle() -> bool {
 /// True when this build of slashpad supports the Launch-at-login
 /// toggle. Exposed so the Settings UI can hide/disable the checkbox
 /// instead of letting the user click something that will fail.
+/// We don't probe SMAppService directly here — any raise from a
+/// msg_send is contained by `objc2::exception::catch` inside the
+/// register/unregister paths.
 pub fn login_item_supported() -> bool {
-    if !in_valid_app_bundle() {
-        return false;
-    }
-    let Some(cls) = AnyClass::get("SMAppService") else {
-        return false;
-    };
-    // `respondsToSelector:` on the metaclass confirms the class method
-    // is actually implemented. Guards against linking regressions where
-    // the class resolves to a forwarding stub (framework not linked) —
-    // `+[SMAppService mainApp]` then raises `unrecognized selector`.
-    unsafe {
-        objc2::exception::catch(|| {
-            let sel = sel!(mainApp);
-            let responds: Bool = msg_send![cls, respondsToSelector: sel];
-            responds.as_bool()
-        })
-        .unwrap_or(false)
-    }
+    in_valid_app_bundle() && AnyClass::get("SMAppService").is_some()
 }
 
 /// Register the app as a Login Item so it launches at login.

@@ -1451,11 +1451,20 @@ impl Slashpad {
                 match result {
                     Ok(()) => {
                         self.chats.clear();
-                        // Relaunch the .app via `open` for clean AppKit state.
+                        // Relaunch the .app via `open -n` so launchd
+                        // always spawns a fresh instance — without
+                        // `-n`, Launch Services sees this still-running
+                        // process and just "activates" it, which does
+                        // nothing once we exit below. A short sleep
+                        // gives `open` time to complete the Launch
+                        // Services handshake before the current
+                        // process tears down.
                         if let Some(path) = app_bundle_path() {
                             let _ = std::process::Command::new("open")
+                                .arg("-n")
                                 .arg(path)
                                 .spawn();
+                            std::thread::sleep(std::time::Duration::from_millis(400));
                         }
                         std::process::exit(0);
                     }
