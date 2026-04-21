@@ -389,119 +389,142 @@ pub unsafe fn first_app_window_ptr() -> *mut c_void {
     std::ptr::null_mut()
 }
 
-// ── Login Items (SMAppService, macOS 13+) ────────────────────────
+// ── Launch at login (user LaunchAgent) ───────────────────────────
 //
-// SMAppService will raise an Obj-C exception (not just return NO with an
-// NSError) when the hosting process can't register — e.g. the hosting
-// binary is outside a signed `.app` bundle, or the runtime doesn't
-// actually expose +[SMAppService mainApp]. Uncaught NSException aborts
-// the Rust process. `objc2::exception::catch` turned out to be
-// unreliable under LTO+strip in release builds, so the real try/catch
-// happens in an Obj-C shim (`login_item.m`) linked via build.rs.
+// Rather than depend on SMAppService — whose +mainApp selector turned
+// out to be missing on at least one macOS runtime we ship to — we
+// register a user LaunchAgent plist at
+// `~/Library/LaunchAgents/dev.slashpad.LoginAgent.plist`. launchd
+// loads every plist in that directory at login and, with
+// `RunAtLoad=true`, runs the ProgramArguments command. We invoke
+// `/usr/bin/open -a <bundle>` so LaunchServices handles activation
+// policy and .app lifecycle correctly.
+//
+// No Obj-C or framework dependency — just filesystem writes.
 
-extern "C" {
-    fn slashpad_login_item_register() -> i32;
-    fn slashpad_login_item_unregister() -> i32;
-    fn slashpad_login_item_supported() -> i32;
-}
+const LOGIN_AGENT_LABEL: &str = "dev.slashpad.LoginAgent";
 
-/// True when the running process lives inside an `.app` bundle whose
-/// Info.plist has a CFBundleIdentifier. SMAppService requires both —
-/// calling its APIs from a bare binary (e.g. `cargo run` or a binary
-/// symlinked outside the bundle) raises an NSException that aborts the
-/// process. We check up-front so there's no need to call into
-/// SMAppService at all from unsupported hosts.
-fn in_valid_app_bundle() -> bool {
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    // Expect .../Foo.app/Contents/MacOS/<binary>
-    let Some(macos_dir) = exe.parent() else {
-        return false;
-    };
-    let Some(contents_dir) = macos_dir.parent() else {
-        return false;
-    };
-    if macos_dir.file_name().and_then(|s| s.to_str()) != Some("MacOS") {
-        return false;
-    }
-    if contents_dir.file_name().and_then(|s| s.to_str()) != Some("Contents") {
-        return false;
-    }
-    let Some(app_dir) = contents_dir.parent() else {
-        return false;
-    };
-    if !app_dir
+fn app_bundle_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    // Expect .../Foo.app/Contents/MacOS/<binary> — walk back to the .app.
+    let app = exe.parent()?.parent()?.parent()?.to_path_buf();
+    if app
         .extension()
         .and_then(|s| s.to_str())
         .map(|ext| ext.eq_ignore_ascii_case("app"))
         .unwrap_or(false)
     {
-        return false;
+        Some(app)
+    } else {
+        None
     }
-    // Info.plist is required for SMAppService to find the main app.
-    contents_dir.join("Info.plist").is_file()
+}
+
+fn launch_agent_plist_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        std::path::PathBuf::from(home)
+            .join("Library")
+            .join("LaunchAgents")
+            .join(format!("{LOGIN_AGENT_LABEL}.plist")),
+    )
 }
 
 /// True when this build of slashpad supports the Launch-at-login
-/// toggle. Exposed so the Settings UI can hide/disable the checkbox
-/// instead of letting the user click something that will fail.
+/// toggle. Requires the running binary to be inside an `.app` bundle
+/// — otherwise we have nothing stable to point the plist at.
 pub fn login_item_supported() -> bool {
-    if !in_valid_app_bundle() {
-        return false;
-    }
-    // Probes via class_getClassMethod in the Obj-C shim — no raise
-    // possible, returns 1 iff +[SMAppService mainApp] is dispatchable.
-    unsafe { slashpad_login_item_supported() == 1 }
+    app_bundle_path().is_some() && launch_agent_plist_path().is_some()
 }
 
-fn describe_status(code: i32) -> &'static str {
-    match code {
-        0 => "success",
-        1 => "SMAppService class not available",
-        2 => "+mainApp selector not recognised",
-        3 => "SMAppService.mainApp returned nil",
-        4 => "register/unregister returned NO",
-        5 => "Obj-C exception caught",
-        _ => "unknown status",
-    }
-}
-
-/// Register the app as a Login Item so it launches at login.
+/// Register the app as a Login Item by writing a user LaunchAgent
+/// plist. launchd picks it up at next login via RunAtLoad.
 pub fn register_login_item() -> bool {
-    if !in_valid_app_bundle() {
+    let Some(bundle) = app_bundle_path() else {
+        eprintln!("[platform/macos] register_login_item: no .app bundle path resolvable");
+        return false;
+    };
+    let Some(plist_path) = launch_agent_plist_path() else {
+        eprintln!("[platform/macos] register_login_item: no HOME");
+        return false;
+    };
+    if let Some(parent) = plist_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "[platform/macos] failed to create {}: {e}",
+                parent.display()
+            );
+            return false;
+        }
+    }
+    let bundle_str = bundle.display().to_string();
+    // `open -a <bundle>` routes through LaunchServices so the app
+    // comes up with its normal activation policy / NSApplicationMain.
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/open</string>
+        <string>-a</string>
+        <string>{bundle_xml}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"#,
+        label = LOGIN_AGENT_LABEL,
+        bundle_xml = xml_escape(&bundle_str),
+    );
+    if let Err(e) = std::fs::write(&plist_path, plist) {
         eprintln!(
-            "[platform/macos] skipping SMAppService.register — binary is not inside a valid .app bundle"
+            "[platform/macos] failed to write {}: {e}",
+            plist_path.display()
         );
         return false;
     }
-    let code = unsafe { slashpad_login_item_register() };
-    if code == 0 {
-        true
-    } else {
-        eprintln!(
-            "[platform/macos] SMAppService.register failed (code {code}: {})",
-            describe_status(code)
-        );
-        false
+    eprintln!(
+        "[platform/macos] wrote LaunchAgent plist at {}",
+        plist_path.display()
+    );
+    true
+}
+
+/// Unregister the Login Item by removing the plist.
+pub fn unregister_login_item() -> bool {
+    let Some(plist_path) = launch_agent_plist_path() else {
+        return false;
+    };
+    if !plist_path.exists() {
+        return true;
+    }
+    match std::fs::remove_file(&plist_path) {
+        Ok(()) => {
+            eprintln!(
+                "[platform/macos] removed LaunchAgent plist at {}",
+                plist_path.display()
+            );
+            true
+        }
+        Err(e) => {
+            eprintln!(
+                "[platform/macos] failed to remove {}: {e}",
+                plist_path.display()
+            );
+            false
+        }
     }
 }
 
-/// Unregister the app as a Login Item.
-pub fn unregister_login_item() -> bool {
-    if !in_valid_app_bundle() {
-        return false;
-    }
-    let code = unsafe { slashpad_login_item_unregister() };
-    if code == 0 {
-        true
-    } else {
-        eprintln!(
-            "[platform/macos] SMAppService.unregister failed (code {code}: {})",
-            describe_status(code)
-        );
-        false
-    }
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Shim that suppresses an unused import on non-macos targets.
