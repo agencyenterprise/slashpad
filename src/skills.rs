@@ -103,6 +103,21 @@ fn load_skills_from(root: &Path) -> anyhow::Result<Vec<Skill>> {
     Ok(out)
 }
 
+/// Delete a skill's directory from disk. Resolves the skill's containing
+/// directory as the parent of its `SKILL.md` path and removes it
+/// recursively. The caller is responsible for reloading the in-memory
+/// skill list afterwards.
+pub fn delete_skill(skill: &Skill) -> std::io::Result<()> {
+    let skill_md = PathBuf::from(&skill.path);
+    let dir = skill_md.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("skill path has no parent: {}", skill.path),
+        )
+    })?;
+    std::fs::remove_dir_all(dir)
+}
+
 /// Seed `skill-creator` into the user's skills directory on first run.
 pub fn seed_bundled_skills() -> std::io::Result<()> {
     let root = skills_dir();

@@ -36,11 +36,14 @@ pub enum MenuTarget {
 
 impl MenuTarget {
     /// Number of rows in the menu for this target. Used by the caller
-    /// to clamp `session_menu_selected` when arrow-navigating.
+    /// to clamp `session_menu_selected` when arrow-navigating. The
+    /// two-row confirmation panel (see `view`'s `confirming_delete`
+    /// parameter) is handled separately by the caller and ignores this.
     pub fn row_count(self) -> usize {
         match self {
             MenuTarget::Session => 3, // Pin + Archive + Rename
-            MenuTarget::Skill | MenuTarget::Project => 1, // Pin only
+            MenuTarget::Skill => 2, // Pin + Delete
+            MenuTarget::Project => 1, // Pin only
         }
     }
 
@@ -64,29 +67,40 @@ impl MenuTarget {
 /// (e.g. a session row without a `session_id` yet). `menu_selected` is
 /// the index of the highlighted menu row. `is_pinned` swaps the top
 /// row's label between Pin and Unpin variants.
+///
+/// When `confirming_delete` is `Some(name)`, the menu renders a
+/// two-row confirmation panel (`Cancel` / `Delete`) instead of the
+/// normal action list. Only used by `MenuTarget::Skill` today.
 pub fn view(
     target: MenuTarget,
     menu_selected: usize,
     can_act: bool,
     is_pinned: bool,
+    confirming_delete: Option<&str>,
 ) -> Element<'static, Message> {
+    if let Some(name) = confirming_delete {
+        return confirm_delete_view(name, menu_selected);
+    }
+
     let header: Element<'static, Message> = text("Actions")
         .size(10)
         .color(theme::MUTED)
         .into();
 
-    // Skills / Projects targets only have Pin, so for them the pin row
-    // sits at index 0. Session target leads with Rename (0), then
-    // Pin/Unpin (1), then Archive (2).
-    let (pin_selected_idx, is_session) = match target {
-        MenuTarget::Session => (1, true),
-        MenuTarget::Skill | MenuTarget::Project => (0, false),
+    // Session target: Rename (0) → Pin/Unpin (1) → Archive (2).
+    // Skill target:   Pin/Unpin (0) → Delete (1).
+    // Project target: Pin/Unpin (0).
+    let (pin_selected_idx, is_session, is_skill) = match target {
+        MenuTarget::Session => (1, true, false),
+        MenuTarget::Skill => (0, false, true),
+        MenuTarget::Project => (0, false, false),
     };
     let pin = menu_row(
         target.pin_label(is_pinned),
         menu_selected == pin_selected_idx,
         can_act,
         Message::TogglePinSelectedRow,
+        theme::TEXT,
     );
 
     let mut body: Column<'static, Message> = column![header].spacing(6);
@@ -96,6 +110,7 @@ pub fn view(
             menu_selected == 0,
             can_act,
             Message::BeginRenameSelectedRow,
+            theme::TEXT,
         );
         body = body.push(rename);
     }
@@ -106,8 +121,19 @@ pub fn view(
             menu_selected == 2,
             can_act,
             Message::ArchiveSelectedRow,
+            theme::TEXT,
         );
         body = body.push(archive);
+    }
+    if is_skill {
+        let delete = menu_row(
+            "Delete skill",
+            menu_selected == 1,
+            can_act,
+            Message::BeginDeleteSkill,
+            theme::DANGER,
+        );
+        body = body.push(delete);
     }
 
     let panel: Element<'static, Message> = container(body)
@@ -142,13 +168,77 @@ pub fn view(
         .into()
 }
 
+/// Two-row confirmation panel: `[Cancel] [Delete]`. `menu_selected`
+/// indexes into `[0 = Cancel, 1 = Delete]`; the caller defaults it to
+/// 0 when entering this state so the safe choice is highlighted first.
+fn confirm_delete_view(
+    name: &str,
+    menu_selected: usize,
+) -> Element<'static, Message> {
+    let header: Element<'static, Message> = text("Actions")
+        .size(10)
+        .color(theme::MUTED)
+        .into();
+
+    let prompt: Element<'static, Message> = text(format!("Delete \"{}\"?", name))
+        .size(13)
+        .color(theme::TEXT)
+        .into();
+
+    let cancel = menu_row(
+        "Cancel",
+        menu_selected == 0,
+        true,
+        Message::CancelDeleteSkill,
+        theme::TEXT,
+    );
+    let confirm = menu_row(
+        "Delete",
+        menu_selected == 1,
+        true,
+        Message::ConfirmDeleteSkill,
+        theme::DANGER,
+    );
+
+    let body: Column<'static, Message> = column![header, prompt, cancel, confirm].spacing(6);
+
+    let panel: Element<'static, Message> = container(body)
+        .padding([8, 10])
+        .width(Length::Fixed(PANEL_W))
+        .style(|_theme: &iced::Theme| iced::widget::container::Style {
+            background: Some(iced::Background::Color(theme::SURFACE_2)),
+            border: iced::Border {
+                color: theme::SURFACE_3,
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            text_color: Some(theme::TEXT),
+            ..Default::default()
+        })
+        .into();
+
+    container(panel)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Right)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .padding(iced::Padding {
+            top: 0.0,
+            right: RIGHT_INSET,
+            bottom: BAR_HEIGHT + ABOVE_BAR_GAP,
+            left: 0.0,
+        })
+        .into()
+}
+
 fn menu_row(
     label: &'static str,
     selected: bool,
     enabled: bool,
     on_press: Message,
+    enabled_color: iced::Color,
 ) -> Element<'static, Message> {
-    let color = if enabled { theme::TEXT } else { theme::MUTED };
+    let color = if enabled { enabled_color } else { theme::MUTED };
     let body = row![text(label).size(13).color(color)]
         .spacing(8)
         .align_y(iced::Alignment::Center);

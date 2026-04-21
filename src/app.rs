@@ -481,6 +481,16 @@ pub enum Message {
     /// Async result from `sessions::rename_session`. Triggers a
     /// `refresh_sessions` so past rows pick up the SDK-persisted summary.
     SessionRenamed(Result<(), String>),
+    /// ↵ while the options menu is open over a Skill row with `Delete
+    /// skill` highlighted — swaps the menu into its confirmation panel.
+    BeginDeleteSkill,
+    /// ↵ in the delete confirmation panel with `Delete` highlighted —
+    /// removes the skill's directory from disk and reloads the list.
+    ConfirmDeleteSkill,
+    /// ↵ in the delete confirmation panel with `Cancel` highlighted, or
+    /// Esc while the confirmation panel is open — returns the menu to
+    /// the action list without deleting.
+    CancelDeleteSkill,
 }
 
 /// Root application state.
@@ -527,6 +537,12 @@ pub struct Slashpad {
     /// Which row within the options menu is highlighted. 0 = Pin/Unpin,
     /// 1 = Archive, 2 = Rename. Reset to 0 on menu open/close.
     pub session_menu_selected: usize,
+    /// When true, the options menu (open under `MenuTarget::Skill`) has
+    /// been swapped into its two-step delete-confirmation panel. Rows
+    /// are `[0 = Cancel, 1 = Delete]`; `session_menu_selected` is
+    /// reinterpreted against that pair while this is set. Reset on
+    /// menu open, cancel, confirm, or menu close.
+    pub skill_delete_confirm: bool,
     /// Session id currently in inline-rename mode on the idle list.
     /// `Some(id)` means the row matching `id` renders a `text_input`
     /// in place of its title; all other rows render normally. Cleared
@@ -705,6 +721,7 @@ impl Slashpad {
             selected_idle_index: 0,
             session_menu_open: false,
             session_menu_selected: 0,
+            skill_delete_confirm: false,
             renaming_session_id: None,
             rename_input: String::new(),
             idle_selection_active: true,
@@ -1099,10 +1116,19 @@ impl Slashpad {
                 // Session target rows: 0 = Rename, 1 = Pin/Unpin, 2 = Archive.
                 // Skill / Project targets only have Pin at index 0.
                 if self.session_menu_open {
+                    // Delete-confirm panel shadows the normal action
+                    // routing: row 0 = Cancel, row 1 = Delete.
+                    if self.skill_delete_confirm {
+                        return self.dispatch_update(match self.session_menu_selected {
+                            1 => Message::ConfirmDeleteSkill,
+                            _ => Message::CancelDeleteSkill,
+                        });
+                    }
                     return self.dispatch_update(match (self.mode, self.session_menu_selected) {
                         (Mode::Idle, 0) => Message::BeginRenameSelectedRow,
                         (Mode::Idle, 1) => Message::TogglePinSelectedRow,
                         (Mode::Idle, 2) => Message::ArchiveSelectedRow,
+                        (Mode::Skills, 1) => Message::BeginDeleteSkill,
                         _ => Message::TogglePinSelectedRow,
                     });
                 }
@@ -1135,7 +1161,16 @@ impl Slashpad {
                 // If the options menu is open, Esc closes it and keeps
                 // the underlying idle-list selection intact. Takes
                 // precedence over every other Esc behavior.
+                //
+                // Exception: when the delete-confirmation panel is
+                // showing, Esc steps back to the action list (one
+                // level) rather than closing the whole menu — so the
+                // user can back out of a confirm without losing the
+                // menu they just opened.
                 if self.session_menu_open {
+                    if self.skill_delete_confirm {
+                        return self.dispatch_update(Message::CancelDeleteSkill);
+                    }
                     self.session_menu_open = false;
                     self.session_menu_selected = 0;
                     return Task::none();
@@ -1270,9 +1305,13 @@ impl Slashpad {
 
             Message::NavDown => {
                 if self.session_menu_open {
-                    let max = menu_target_for_mode(self.mode)
-                        .map(|t| t.row_count().saturating_sub(1))
-                        .unwrap_or(0);
+                    let max = if self.skill_delete_confirm {
+                        1 // Cancel / Delete
+                    } else {
+                        menu_target_for_mode(self.mode)
+                            .map(|t| t.row_count().saturating_sub(1))
+                            .unwrap_or(0)
+                    };
                     if self.session_menu_selected < max {
                         self.session_menu_selected += 1;
                     }
@@ -1940,6 +1979,7 @@ impl Slashpad {
                 }
                 self.session_menu_open = true;
                 self.session_menu_selected = 0;
+                self.skill_delete_confirm = false;
                 Task::none()
             }
 
@@ -2096,6 +2136,77 @@ impl Slashpad {
                     },
                     Message::SessionTagged,
                 )
+            }
+
+            Message::BeginDeleteSkill => {
+                // Only valid when the options menu is open over a skill
+                // row. Swap the menu into its two-row confirm panel with
+                // `Cancel` highlighted by default.
+                if !self.session_menu_open || self.mode != Mode::Skills {
+                    return Task::none();
+                }
+                if self
+                    .filtered_skills
+                    .get(self.selected_skill_index)
+                    .is_none()
+                {
+                    self.session_menu_open = false;
+                    self.session_menu_selected = 0;
+                    return Task::none();
+                }
+                self.skill_delete_confirm = true;
+                self.session_menu_selected = 0;
+                Task::none()
+            }
+
+            Message::CancelDeleteSkill => {
+                // Step back from the confirm panel to the regular action
+                // list. Keeps the menu open so the user can reach for a
+                // different action without re-summoning ⌘K.
+                self.skill_delete_confirm = false;
+                self.session_menu_selected = 0;
+                Task::none()
+            }
+
+            Message::ConfirmDeleteSkill => {
+                let Some(skill) = self
+                    .filtered_skills
+                    .get(self.selected_skill_index)
+                    .cloned()
+                else {
+                    self.session_menu_open = false;
+                    self.session_menu_selected = 0;
+                    self.skill_delete_confirm = false;
+                    return Task::none();
+                };
+                if let Err(e) = skills::delete_skill(&skill) {
+                    eprintln!(
+                        "[slashpad] failed to delete skill {:?}: {e}",
+                        skill.name
+                    );
+                }
+                // Reload the canonical list and rebuild the filtered view
+                // against the current `/query` so the deleted row drops
+                // out (or a permission error is reflected by the skill
+                // staying visible after the reload round-trip).
+                self.all_skills =
+                    skills::load_skills(self.settings.load_user_settings)
+                        .unwrap_or_default();
+                let query = self.input.strip_prefix('/').unwrap_or("");
+                self.filtered_skills = if query.is_empty() {
+                    self.all_skills.clone()
+                } else {
+                    crate::fuzzy::filter_skills(&self.all_skills, query)
+                };
+                self.apply_pinned_skill_sort();
+                let count = self.filtered_skills.len();
+                if self.selected_skill_index >= count {
+                    self.selected_skill_index = count.saturating_sub(1);
+                }
+                self.session_menu_open = false;
+                self.session_menu_selected = 0;
+                self.skill_delete_confirm = false;
+                Task::none()
             }
 
             Message::MovePinnedUp => match self.mode {
@@ -2593,11 +2704,20 @@ impl Slashpad {
                     (true, pinned)
                 }
             };
+            let confirming_name: Option<String> =
+                if self.skill_delete_confirm && target == ui::session_options_menu::MenuTarget::Skill {
+                    self.filtered_skills
+                        .get(self.selected_skill_index)
+                        .map(|s| s.name.clone())
+                } else {
+                    None
+                };
             ui::session_options_menu::view(
                 target,
                 self.session_menu_selected,
                 can_act,
                 is_pinned,
+                confirming_name.as_deref(),
             )
         } else {
             Space::new(iced::Length::Fixed(0.0), iced::Length::Fixed(0.0)).into()
