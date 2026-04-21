@@ -392,19 +392,17 @@ pub unsafe fn first_app_window_ptr() -> *mut c_void {
 // ── Login Items (SMAppService, macOS 13+) ────────────────────────
 //
 // SMAppService will raise an Obj-C exception (not just return NO with an
-// NSError) when the hosting process can't be registered — e.g. running
-// from `cargo run` where the binary isn't inside a signed `.app` bundle,
-// or when the bundle lacks a valid CFBundleIdentifier. An uncaught
-// NSException aborts the Rust process, which is how the settings
-// checkbox was taking the app down. Everything here goes through
-// `objc2::exception::catch` so a misconfigured host logs an error
-// instead of crashing.
+// NSError) when the hosting process can't register — e.g. the hosting
+// binary is outside a signed `.app` bundle, or the runtime doesn't
+// actually expose +[SMAppService mainApp]. Uncaught NSException aborts
+// the Rust process. `objc2::exception::catch` turned out to be
+// unreliable under LTO+strip in release builds, so the real try/catch
+// happens in an Obj-C shim (`login_item.m`) linked via build.rs.
 
-fn exception_message(exc: Option<objc2::rc::Retained<objc2::exception::Exception>>) -> String {
-    match exc {
-        Some(e) => format!("{e:?}"),
-        None => "unknown Obj-C exception".to_string(),
-    }
+extern "C" {
+    fn slashpad_login_item_register() -> i32;
+    fn slashpad_login_item_unregister() -> i32;
+    fn slashpad_login_item_supported() -> i32;
 }
 
 /// True when the running process lives inside an `.app` bundle whose
@@ -448,110 +446,62 @@ fn in_valid_app_bundle() -> bool {
 /// True when this build of slashpad supports the Launch-at-login
 /// toggle. Exposed so the Settings UI can hide/disable the checkbox
 /// instead of letting the user click something that will fail.
-/// We don't probe SMAppService directly here — any raise from a
-/// msg_send is contained by `objc2::exception::catch` inside the
-/// register/unregister paths.
 pub fn login_item_supported() -> bool {
-    in_valid_app_bundle() && AnyClass::get("SMAppService").is_some()
+    if !in_valid_app_bundle() {
+        return false;
+    }
+    // Probes via class_getClassMethod in the Obj-C shim — no raise
+    // possible, returns 1 iff +[SMAppService mainApp] is dispatchable.
+    unsafe { slashpad_login_item_supported() == 1 }
+}
+
+fn describe_status(code: i32) -> &'static str {
+    match code {
+        0 => "success",
+        1 => "SMAppService class not available",
+        2 => "+mainApp selector not recognised",
+        3 => "SMAppService.mainApp returned nil",
+        4 => "register/unregister returned NO",
+        5 => "Obj-C exception caught",
+        _ => "unknown status",
+    }
 }
 
 /// Register the app as a Login Item so it launches at login.
-/// Returns false (and logs) on any failure, including Obj-C exceptions
-/// raised for unsigned / non-bundle hosts.
 pub fn register_login_item() -> bool {
-    if !login_item_supported() {
+    if !in_valid_app_bundle() {
         eprintln!(
             "[platform/macos] skipping SMAppService.register — binary is not inside a valid .app bundle"
         );
         return false;
     }
-    // The class method `mainApp` can itself raise when the host
-    // process isn't a recognised bundle, so every msg_send runs
-    // inside `objc2::exception::catch`.
-    let outcome = unsafe {
-        objc2::exception::catch(|| {
-            let cls = AnyClass::get("SMAppService").expect("already checked above");
-            let service: *mut AnyObject = msg_send![cls, mainApp];
-            if service.is_null() {
-                return (false, 0usize);
-            }
-            let mut error: *mut AnyObject = std::ptr::null_mut();
-            let ok: Bool = msg_send![service, registerAndReturnError: &mut error];
-            (ok.as_bool(), error as usize)
-        })
-    };
-    match outcome {
-        Ok((true, _)) => true,
-        Ok((false, err)) => {
-            eprintln!(
-                "[platform/macos] SMAppService.register returned NO (error ptr: {:?})",
-                err
-            );
-            false
-        }
-        Err(exc) => {
-            eprintln!(
-                "[platform/macos] SMAppService.register threw: {}",
-                exception_message(exc)
-            );
-            false
-        }
+    let code = unsafe { slashpad_login_item_register() };
+    if code == 0 {
+        true
+    } else {
+        eprintln!(
+            "[platform/macos] SMAppService.register failed (code {code}: {})",
+            describe_status(code)
+        );
+        false
     }
 }
 
 /// Unregister the app as a Login Item.
 pub fn unregister_login_item() -> bool {
-    if !login_item_supported() {
+    if !in_valid_app_bundle() {
         return false;
     }
-    let outcome = unsafe {
-        objc2::exception::catch(|| {
-            let cls = AnyClass::get("SMAppService").expect("already checked above");
-            let service: *mut AnyObject = msg_send![cls, mainApp];
-            if service.is_null() {
-                return (false, 0usize);
-            }
-            let mut error: *mut AnyObject = std::ptr::null_mut();
-            let ok: Bool = msg_send![service, unregisterAndReturnError: &mut error];
-            (ok.as_bool(), error as usize)
-        })
-    };
-    match outcome {
-        Ok((true, _)) => true,
-        Ok((false, err)) => {
-            eprintln!(
-                "[platform/macos] SMAppService.unregister returned NO (error ptr: {:?})",
-                err
-            );
-            false
-        }
-        Err(exc) => {
-            eprintln!(
-                "[platform/macos] SMAppService.unregister threw: {}",
-                exception_message(exc)
-            );
-            false
-        }
+    let code = unsafe { slashpad_login_item_unregister() };
+    if code == 0 {
+        true
+    } else {
+        eprintln!(
+            "[platform/macos] SMAppService.unregister failed (code {code}: {})",
+            describe_status(code)
+        );
+        false
     }
-}
-
-/// Check if the app is currently registered as a Login Item.
-/// SMAppServiceStatus: 0 = notRegistered, 1 = enabled, 2 = requiresApproval, 3 = notFound.
-pub fn is_login_item_enabled() -> bool {
-    if !login_item_supported() {
-        return false;
-    }
-    let outcome = unsafe {
-        objc2::exception::catch(|| {
-            let cls = AnyClass::get("SMAppService").expect("already checked above");
-            let service: *mut AnyObject = msg_send![cls, mainApp];
-            if service.is_null() {
-                return -1isize;
-            }
-            msg_send![service, status]
-        })
-    };
-    matches!(outcome, Ok(1))
 }
 
 /// Shim that suppresses an unused import on non-macos targets.
