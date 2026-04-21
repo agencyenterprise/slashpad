@@ -4,17 +4,40 @@ set -euo pipefail
 # Usage: ./scripts/release.sh [version] [--prerelease]
 # If no version is given, reads it from Cargo.toml.
 
-VERSION="${1:-}"
+VERSION=""
 IS_PRERELEASE=false
+NOTES_FILE=""
 
-for arg in "$@"; do
-    if [ "$arg" = "--prerelease" ]; then
-        IS_PRERELEASE=true
-    fi
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --prerelease)
+            IS_PRERELEASE=true
+            shift
+            ;;
+        --notes-file)
+            NOTES_FILE="${2:-}"
+            shift 2
+            ;;
+        --notes-file=*)
+            NOTES_FILE="${1#*=}"
+            shift
+            ;;
+        *)
+            if [ -z "$VERSION" ]; then
+                VERSION="$1"
+            fi
+            shift
+            ;;
+    esac
 done
 
-if [ -z "$VERSION" ] || [ "$VERSION" = "--prerelease" ]; then
+if [ -z "$VERSION" ]; then
     VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+fi
+
+if [ -n "$NOTES_FILE" ] && [ ! -f "$NOTES_FILE" ]; then
+    echo "ERROR: --notes-file '$NOTES_FILE' does not exist" >&2
+    exit 1
 fi
 
 TAG="v${VERSION}"
@@ -32,10 +55,15 @@ fi
 if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
     echo "    Release ${TAG} already exists, skipping"
 else
+    if [ -n "$NOTES_FILE" ]; then
+        NOTES_ARG=(--notes-file "$NOTES_FILE")
+    else
+        NOTES_ARG=(--generate-notes)
+    fi
     gh release create "$TAG" \
         --repo "$REPO" \
         --title "Slashpad ${TAG}" \
-        --generate-notes \
+        "${NOTES_ARG[@]}" \
         --prerelease
     echo "    Created prerelease ${TAG}"
 fi

@@ -45,20 +45,57 @@ git commit -m "Bump version to X.Y.Z"
 git push origin main
 ```
 
+### 3.5. Generate release notes
+
+GitHub's `--generate-notes` builds the body from merged PRs. Slashpad commits
+directly to `main`, so auto-gen collapses to just a compare link. Write the
+notes yourself instead.
+
+1. Find the previous tag:
+   ```bash
+   PREV_TAG=$(gh release list --repo agencyenterprise/slashpad --limit 1 --json tagName -q '.[0].tagName')
+   # fallback if gh is unreachable:
+   # PREV_TAG=$(git describe --tags --abbrev=0 HEAD^)
+   ```
+2. Collect commits since that tag:
+   ```bash
+   git log "$PREV_TAG"..HEAD --pretty=format:'- %s (%h)'
+   ```
+3. Write the notes to `/tmp/slashpad-release-notes.md` in this shape:
+
+   ```markdown
+   ## Highlights
+
+   - <one short, user-facing bullet per notable change, present tense>
+
+   ## All changes
+
+   - <commit subject> (<short sha>)
+   - ...
+
+   **Full Changelog**: https://github.com/agencyenterprise/slashpad/compare/<prev-tag>...v<new-version>
+   ```
+
+   Guidance for **Highlights**:
+   - 2–5 bullets, framed for a user (what changed for them), not the raw commit subject.
+   - Skip pure chore/version-bump commits.
+   - For a **prerelease** with nothing user-visible yet, a single line like
+     "Prerelease of X.Y.Z — testing <area>" is fine; omit the Highlights section.
+
 ### 4. Run the release script
 
 For a **prerelease**:
 ```bash
-./scripts/release.sh X.Y.Z-pre.N --prerelease
+./scripts/release.sh X.Y.Z-pre.N --prerelease --notes-file /tmp/slashpad-release-notes.md
 ```
 
 For a **stable release**:
 ```bash
-./scripts/release.sh X.Y.Z
+./scripts/release.sh X.Y.Z --notes-file /tmp/slashpad-release-notes.md
 ```
 
 This script:
-1. Creates a GitHub prerelease with auto-generated notes (all releases start as prereleases)
+1. Creates a GitHub prerelease with the notes from `--notes-file` (falls back to GitHub auto-gen if omitted). All releases start as prereleases.
 2. Waits for CI assets: DMGs and .app zips for both arches (~5-8 min)
 3. For **stable releases only**: promotes the release from prerelease to full release so the in-app updater picks it up
 
