@@ -165,8 +165,8 @@ use crate::settings::{AppSettings, PreferredTerminal};
 use crate::sidecar::{self, FollowUp, Payload, SidecarEvent, SpawnedSidecar};
 use crate::skills;
 use crate::state::{
-    is_archived, is_pinned, new_pin_tag, pin_tag_with, pin_timestamp, ChatId, ChatMessageView,
-    ChatState, ChatStatus, Mode, Pin, SessionInfo, Skill, TAG_ARCHIVED,
+    is_archived, is_pinned, new_pin_tag, pin_tag_with, pin_timestamp, Anchor, ChatId,
+    ChatMessageView, ChatState, ChatStatus, Mode, SessionInfo, Skill, TAG_ARCHIVED,
 };
 use crate::ui;
 
@@ -414,21 +414,21 @@ pub enum Message {
     /// the top of the palette — kick off a native OS window drag that
     /// follows the cursor until the mouse button is released.
     DragWindow,
-    /// Cmd+Shift+P — toggle the unified pin. Pinning snapshots the
+    /// Cmd+Shift+A — toggle the anchor. Anchoring snapshots the
     /// palette's current on-screen position and, if the user is viewing
     /// a chat, that chat id too — so summoning the palette later
-    /// restores both. Pressing again fully unpins: the window snaps
+    /// restores both. Pressing again fully unanchors: the window snaps
     /// back to cursor-center on the next summon and the Skills prefill
-    /// returns. See `crate::state::Pin` for lifecycle details.
-    TogglePin,
+    /// returns. See `crate::state::Anchor` for lifecycle details.
+    ToggleAnchor,
     /// Resolution of the `iced::window::get_position` lookup kicked off
-    /// by a fresh pin when the user hadn't already dragged the window.
-    /// Arrives after the async runtime reads the palette's actual
-    /// on-screen position; we commit it (together with the current
-    /// chat id, if any) as `self.pinned`. `None` means the window
-    /// wasn't available (shouldn't happen while the palette is
+    /// by a fresh anchor when the user hadn't already dragged the
+    /// window. Arrives after the async runtime reads the palette's
+    /// actual on-screen position; we commit it (together with the
+    /// current chat id, if any) as `self.anchored`. `None` means the
+    /// window wasn't available (shouldn't happen while the palette is
     /// visible, but handled as a no-op rather than panicking).
-    CommitPin(Option<iced::Point>),
+    CommitAnchor(Option<iced::Point>),
     /// Window position changed. Fired both by user drags and by our own
     /// programmatic `iced::window::move_to` calls; `update` distinguishes
     /// them via `programmatic_move_pending` so only user drags are
@@ -597,11 +597,12 @@ pub struct Slashpad {
     /// whenever `start_chat` / `start_chat_detached` creates a fresh
     /// chat, so each new chat opens at the cursor again.
     pub dragged_position: Option<iced::Point>,
-    /// The user's current pin (Cmd+Shift+P). Unified "stay put" state:
-    /// captures the palette's on-screen position *and*, if pinned while
-    /// viewing a chat, the chat id to reopen on every future summon.
-    /// See `crate::state::Pin` for lifecycle details. In-memory only.
-    pub pinned: Option<Pin>,
+    /// The user's current anchor (Cmd+Shift+A). Unified "stay put"
+    /// state: captures the palette's on-screen position *and*, if
+    /// anchored while viewing a chat, the chat id to reopen on every
+    /// future summon. See `crate::state::Anchor` for lifecycle
+    /// details. In-memory only.
+    pub anchored: Option<Anchor>,
     /// Armed right before we issue `iced::window::move_to` so the
     /// `window::Event::Moved` fired by that programmatic move isn't
     /// mistaken for a user drag. Cleared by the first `WindowMoved`
@@ -721,7 +722,7 @@ impl Slashpad {
             selected_project_index: 0,
             input_before_picker: None,
             dragged_position: None,
-            pinned: None,
+            anchored: None,
             programmatic_move_pending: false,
             update_status: UpdateStatus::Idle,
         };
@@ -938,14 +939,11 @@ impl Slashpad {
 
         // Cmd+letter shortcuts. `ShortcutFilter` prevents the letter
         // from leaking into text_input; we don't need post-hoc stripping.
-        // Order matters: Cmd+Shift+P must be checked before plain Cmd+P
-        // since the shifted chord would otherwise fall through to the
-        // project picker.
         if modifiers.command()
             && modifiers.shift()
-            && matches!(key.as_ref(), Key::Character("p") | Key::Character("P"))
+            && matches!(key.as_ref(), Key::Character("a") | Key::Character("A"))
         {
-            return Some(Message::TogglePin);
+            return Some(Message::ToggleAnchor);
         }
         if modifiers.command() && matches!(key.as_ref(), Key::Character("p")) {
             return Some(Message::OpenProjectPicker);
@@ -1600,34 +1598,35 @@ impl Slashpad {
                         self.programmatic_move_pending = false;
                     } else {
                         self.dragged_position = Some(position);
-                        // If the user drags while pinned, the pin follows:
-                        // otherwise they'd have to unpin-drag-repin to
-                        // relocate a pinned palette, which is annoying.
-                        if let Some(pin) = &mut self.pinned {
-                            pin.position = position;
+                        // If the user drags while anchored, the anchor
+                        // follows: otherwise they'd have to unanchor-drag-
+                        // reanchor to relocate an anchored palette, which
+                        // is annoying.
+                        if let Some(anchor) = &mut self.anchored {
+                            anchor.position = position;
                         }
                     }
                 }
                 Task::none()
             }
 
-            Message::TogglePin => {
-                // Pin is a chat-only affordance — the shortcut is inert
-                // everywhere else (the keyhints bar only advertises it
-                // in Chatting, but the chord is globally reserved by
+            Message::ToggleAnchor => {
+                // Anchor is a chat-only affordance — the shortcut is
+                // inert everywhere else (the keyhints bar only advertises
+                // it in Chatting, but the chord is globally reserved by
                 // `ShortcutFilter`, so we still receive the message in
                 // other modes and drop it here).
                 if self.mode != Mode::Chatting {
                     return Task::none();
                 }
-                if self.pinned.is_some() {
-                    // Unpin → full reset to the default cursor-centered
+                if self.anchored.is_some() {
+                    // Unanchor → full reset to the default cursor-centered
                     // behavior. Clear both stored positions and actively
                     // move the window back now so the user sees the
                     // effect immediately (not on next hide/show). The
-                    // chat portion of the pin (if any) is released at
-                    // the same time — unpin is atomic.
-                    self.pinned = None;
+                    // chat portion of the anchor (if any) is released at
+                    // the same time — unanchor is atomic.
+                    self.anchored = None;
                     self.dragged_position = None;
                     #[cfg(target_os = "macos")]
                     if let Some(id) = self.palette_window_id {
@@ -1642,36 +1641,37 @@ impl Slashpad {
                         }
                     }
                 } else {
-                    // Pin → capture the active chat and current position.
+                    // Anchor → capture the active chat and current position.
                     let chat_id = self.active_chat_id;
                     if let Some(position) = self.dragged_position {
-                        self.pinned = Some(Pin { position, chat_id });
+                        self.anchored = Some(Anchor { position, chat_id });
                     } else if let Some(id) = self.palette_window_id {
-                        // User hasn't dragged yet — pin wherever the palette
-                        // currently sits on screen. We don't track position
-                        // continuously (the `programmatic_move_pending` flag
-                        // swallows the initial cursor-center `Moved` event
-                        // so it isn't mistaken for a drag), so read it now
-                        // via `get_position`. The resolved Task dispatches
-                        // `CommitPin` which reads the chat id fresh at
-                        // commit time and finalises the pin.
-                        return iced::window::get_position(id).map(Message::CommitPin);
+                        // User hasn't dragged yet — anchor wherever the
+                        // palette currently sits on screen. We don't track
+                        // position continuously (the
+                        // `programmatic_move_pending` flag swallows the
+                        // initial cursor-center `Moved` event so it isn't
+                        // mistaken for a drag), so read it now via
+                        // `get_position`. The resolved Task dispatches
+                        // `CommitAnchor` which reads the chat id fresh at
+                        // commit time and finalises the anchor.
+                        return iced::window::get_position(id).map(Message::CommitAnchor);
                     }
                 }
                 Task::none()
             }
 
-            Message::CommitPin(point) => {
+            Message::CommitAnchor(point) => {
                 if let Some(position) = point {
                     // Only commit if the user hasn't managed to drag,
                     // toggle, or leave Chatting in the tiny window
                     // between kicking off the async read and this
                     // handler firing.
                     if self.mode == Mode::Chatting
-                        && self.pinned.is_none()
+                        && self.anchored.is_none()
                         && self.dragged_position.is_none()
                     {
-                        self.pinned = Some(Pin {
+                        self.anchored = Some(Anchor {
                             position,
                             chat_id: self.active_chat_id,
                         });
@@ -2548,7 +2548,7 @@ impl Slashpad {
                     .unwrap_or(false),
                 skill_locked: self.locked_skill().is_some(),
                 project_path_display: display_project_path(&self.project_path),
-                pinned: self.pinned.is_some(),
+                anchored: self.anchored.is_some(),
                 session_menu_open: self.session_menu_open,
                 can_open_options,
                 session_menu_selected: self.session_menu_selected,
@@ -3782,27 +3782,27 @@ impl Slashpad {
         self.all_skills =
             skills::load_skills(self.settings.load_user_settings).unwrap_or_default();
 
-        // If the user has pinned a chat (Cmd+Shift+P while viewing one)
-        // and that chat is still alive, re-enter it directly. Otherwise
-        // fall through to the default "open into Skills with `/`
-        // prefilled" behavior. A position-only pin goes through the
-        // same fall-through — it only affects window placement.
-        let pinned_chat_id = self
-            .pinned
-            .and_then(|p| p.chat_id)
+        // If the user has anchored a chat (Cmd+Shift+A while viewing
+        // one) and that chat is still alive, re-enter it directly.
+        // Otherwise fall through to the default "open into Skills with
+        // `/` prefilled" behavior. A position-only anchor goes through
+        // the same fall-through — it only affects window placement.
+        let anchored_chat_id = self
+            .anchored
+            .and_then(|a| a.chat_id)
             .filter(|id| self.chats.contains_key(id));
 
-        if let Some(chat_id) = pinned_chat_id {
+        if let Some(chat_id) = anchored_chat_id {
             self.mode = Mode::Chatting;
             self.active_chat_id = Some(chat_id);
             self.input.clear();
         } else {
-            // Defensive: if the pinned chat has since been closed, drop
-            // just the chat portion of the pin while keeping the pinned
-            // position intact.
-            if let Some(pin) = &mut self.pinned {
-                if pin.chat_id.is_some() {
-                    pin.chat_id = None;
+            // Defensive: if the anchored chat has since been closed,
+            // drop just the chat portion of the anchor while keeping
+            // the anchored position intact.
+            if let Some(anchor) = &mut self.anchored {
+                if anchor.chat_id.is_some() {
+                    anchor.chat_id = None;
                 }
             }
             // Default: open into the skills picker with "/" prefilled.
@@ -3841,15 +3841,15 @@ impl Slashpad {
         let mut tasks: Vec<Task<Message>> = Vec::with_capacity(4);
         tasks.push(style_task);
         // Skip cursor-centering if the user has previously dragged the
-        // palette in this session (or pinned it permanently): the
+        // palette in this session (or anchored it permanently): the
         // NSPanel retains its frame across `orderOut`/`orderFrontRegardless`,
         // so letting it reappear where they put it is the "just show it
         // where I left it" experience. `dragged_position` is cleared by
         // `start_chat` / `start_chat_detached` so each fresh chat cursor-
-        // follows; the pin is NOT cleared there — that's the whole
-        // point of pinning.
+        // follows; the anchor is NOT cleared there — that's the whole
+        // point of anchoring.
         #[cfg(target_os = "macos")]
-        if self.dragged_position.is_none() && self.pinned.is_none() {
+        if self.dragged_position.is_none() && self.anchored.is_none() {
             if let Some((x, y)) =
                 crate::platform::macos::cursor_palette_position(Self::LAUNCHER_W as f64)
             {

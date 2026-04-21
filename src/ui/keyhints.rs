@@ -42,12 +42,12 @@ pub struct KeyhintContext {
     /// Tilde-abbreviated display of the directory Claude Code is running
     /// in (e.g. `~/.slashpad`). Rendered centered in the bar.
     pub project_path_display: String,
-    /// True when the user has pinned the palette via Cmd+Shift+P.
-    /// Pinning captures the window's current position *and*, if the
-    /// user pinned while viewing a chat, the chat id — summoning the
-    /// palette later restores both. Swaps the hint label from "Pin"
-    /// to "Unpin".
-    pub pinned: bool,
+    /// True when the user has anchored the palette via Cmd+Shift+A.
+    /// Anchoring captures the window's current position *and*, if the
+    /// user anchored while viewing a chat, the chat id — summoning
+    /// the palette later restores both. Swaps the hint label from
+    /// "Anchor" to "Unanchor".
+    pub anchored: bool,
     /// True when the floating `⌘K Actions` submenu is open. Replaces
     /// the normal idle-mode hints with menu-specific ones.
     pub session_menu_open: bool,
@@ -181,13 +181,14 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         Mode::Settings => vec![],
     };
 
-    // Pin/unpin affordance: only meaningful inside a chat — pinning
-    // snapshots the window's on-screen position *and* the active chat
-    // id so the next summon restores both. Outside Chatting there's no
-    // chat to pin, so the hint and shortcut are hidden.
+    // Anchor/unanchor affordance: only meaningful inside a chat —
+    // anchoring snapshots the window's on-screen position *and* the
+    // active chat id so the next summon restores both. Outside
+    // Chatting there's no chat to anchor, so the hint and shortcut
+    // are hidden.
     if matches!(mode, Mode::Chatting) {
-        let label = if ctx.pinned { "Unpin" } else { "Pin" };
-        hints.push(("⌘⇧P", label));
+        let label = if ctx.anchored { "Unanchor" } else { "Anchor" };
+        hints.push(("⌘⇧A", label));
     }
 
     // Actions submenu affordance: available in the three modes that
@@ -215,11 +216,11 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         hints.push(("⌘⇧↑↓", "Reorder"));
     }
 
-    // Left cluster: `esc`, `⌘⇧P`, and `ctrl c` render flush-left in
-    // that fixed order (so `⌘⇧P` always sits immediately right of
+    // Left cluster: `esc`, `⌘⇧A`, and `ctrl c` render flush-left in
+    // that fixed order (so `⌘⇧A` always sits immediately right of
     // `esc`, regardless of each mode's original vec ordering).
     // Everything else flows flush-right preserving source order.
-    const LEFT_ORDER: [&str; 3] = ["esc", "⌘⇧P", "ctrl c"];
+    const LEFT_ORDER: [&str; 3] = ["esc", "⌘⇧A", "ctrl c"];
     let (left_unordered, right): (Vec<_>, Vec<_>) = hints
         .into_iter()
         .partition(|(key, _)| LEFT_ORDER.iter().any(|k| k == key));

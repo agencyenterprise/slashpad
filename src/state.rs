@@ -203,27 +203,29 @@ pub struct SessionInfo {
 /// once the `SessionId` event arrives.
 pub type ChatId = u64;
 
-/// A user "pin" — captured when they press Cmd+Shift+P. Unifies two
-/// previously separate concepts ("pin window position" and "stick
-/// chat"): pinning always locks the palette's position, and *also*
-/// locks the current chat if the user pinned while viewing one.
+/// A user "anchor" — captured when they press Cmd+Shift+A. Unifies
+/// two previously separate concepts ("anchor window position" and
+/// "stick chat"): anchoring always locks the palette's position, and
+/// *also* locks the current chat if the user anchored while viewing
+/// one. Distinct from the list-level "pin" feature (⌘K → Pin session
+/// / skill / project), which reorders rows to the top of a list.
 ///
 /// Lifecycle:
-/// - Created by `Message::TogglePin` (or its async cousin
-///   `Message::CommitPin` when the current position wasn't already
-///   known from a drag).
-/// - `position` tracks subsequent user drags while pinned (see
+/// - Created by `Message::ToggleAnchor` (or its async cousin
+///   `Message::CommitAnchor` when the current position wasn't
+///   already known from a drag).
+/// - `position` tracks subsequent user drags while anchored (see
 ///   `Message::WindowMoved`).
-/// - `chat_id` is set from `active_chat_id` at pin time if the user
-///   was in `Mode::Chatting`. It survives navigation — summoning the
-///   palette later jumps back into the pinned chat regardless of
-///   where the user navigated. Degrades to `None` inline in
+/// - `chat_id` is set from `active_chat_id` at anchor time if the
+///   user was in `Mode::Chatting`. It survives navigation — summoning
+///   the palette later jumps back into the anchored chat regardless
+///   of where the user navigated. Degrades to `None` inline in
 ///   `show_palette` if the referenced chat has since been removed.
-/// - Cleared entirely by a second Cmd+Shift+P (unpin).
+/// - Cleared entirely by a second Cmd+Shift+A (unanchor).
 ///
 /// In-memory only — does not persist across app restarts.
 #[derive(Debug, Clone, Copy)]
-pub struct Pin {
+pub struct Anchor {
     pub position: iced::Point,
     pub chat_id: Option<ChatId>,
 }

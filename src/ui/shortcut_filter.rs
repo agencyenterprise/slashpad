@@ -5,8 +5,8 @@
 //! character from `KeyPressed.text` into its internal buffer and fires
 //! `on_input`, *without* checking whether `Cmd` or `Ctrl` is held
 //! (except for the hard-coded c/x/v/a clipboard shortcuts). That means
-//! a shortcut like `Cmd+Shift+P` produces `text = Some("P")`, text_input
-//! inserts the `P`, publishes `InputChanged("...P")`, and renders a
+//! a shortcut like `Cmd+Shift+A` produces `text = Some("A")`, text_input
+//! inserts the `A`, publishes `InputChanged("...A")`, and renders a
 //! frame showing the leaked letter before any subscription handler can
 //! strip it.
 //!

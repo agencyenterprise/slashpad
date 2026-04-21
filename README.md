@@ -6,14 +6,12 @@ Press the global hotkey (default **Ctrl+Space**) → type a command or prompt �
 
 ## Install
 
-Download the latest release (macOS, signed & notarized):
+Download the latest release:
 
 - [**Slashpad for Apple Silicon**](https://github.com/agencyenterprise/slashpad/releases/latest/download/Slashpad-darwin-aarch64.dmg)
 - [**Slashpad for Intel**](https://github.com/agencyenterprise/slashpad/releases/latest/download/Slashpad-darwin-x86_64.dmg)
 
 Open the DMG, drag **Slashpad** to your Applications folder, and launch it. Press **Ctrl+Space** to open the palette. You can change the hotkey in Settings (click the tray menu icon).
-
-> macOS only. The JS runtime (Bun) is bundled automatically.
 
 See [all releases](https://github.com/agencyenterprise/slashpad/releases) for release notes and older versions.
 
@@ -96,6 +94,7 @@ Claude handles installing Composio and linking your accounts automatically. The 
 | `⌘+Enter` | Fire & forget (send and dismiss) |
 | `⌘+P` | Switch project |
 | `⌘+T` | Open session in terminal |
+| `⌘+Shift+A` | Anchor chat (keep palette + current chat in place) |
 | `Ctrl+C` | Cancel generation |
 | `Escape` | Dismiss or go back |
 
