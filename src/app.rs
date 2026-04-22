@@ -641,7 +641,6 @@ impl Slashpad {
         // so `external_sender()` is ready for the hotkey forwarder below.
 
         let settings = AppSettings::load_or_default();
-        let all_skills = skills::load_skills(settings.load_user_settings).unwrap_or_default();
 
         // Resolve the starting project path from persisted settings,
         // falling back to `~/.slashpad` if unset or if the saved path
@@ -654,6 +653,10 @@ impl Slashpad {
             .unwrap_or_else(|| {
                 sidecar::slashpad_home().unwrap_or_else(|_| std::path::PathBuf::from("."))
             });
+
+        let all_skills =
+            skills::load_skills(Some(&project_path), settings.load_user_settings)
+                .unwrap_or_default();
 
         // Spin up the hotkey manager — forwards presses into the external bus.
         match hotkey::spawn(&settings.hotkey) {
@@ -1023,6 +1026,7 @@ impl Slashpad {
                     // reopening the palette.
                     if self.mode != Mode::Skills {
                         self.all_skills = skills::load_skills(
+                            Some(&self.project_path),
                             self.settings.load_user_settings,
                         )
                         .unwrap_or_default();
@@ -1691,7 +1695,7 @@ impl Slashpad {
                 // payload; already-running chats keep their original
                 // scope until restarted, which is fine.
                 self.all_skills =
-                    skills::load_skills(enabled).unwrap_or_default();
+                    skills::load_skills(Some(&self.project_path), enabled).unwrap_or_default();
                 self.filtered_skills = if self.mode == Mode::Skills {
                     if let Some(query) = self.input.strip_prefix('/') {
                         if query.is_empty() {
@@ -2103,9 +2107,11 @@ impl Slashpad {
                 // against the current `/query` so the deleted row drops
                 // out (or a permission error is reflected by the skill
                 // staying visible after the reload round-trip).
-                self.all_skills =
-                    skills::load_skills(self.settings.load_user_settings)
-                        .unwrap_or_default();
+                self.all_skills = skills::load_skills(
+                    Some(&self.project_path),
+                    self.settings.load_user_settings,
+                )
+                .unwrap_or_default();
                 let query = self.input.strip_prefix('/').unwrap_or("");
                 self.filtered_skills = if query.is_empty() {
                     self.all_skills.clone()
@@ -2769,20 +2775,40 @@ impl Slashpad {
                 if let Err(e) = self.settings.save() {
                     eprintln!("[slashpad] failed to persist selected project: {e}");
                 }
-                self.mode = Mode::Idle;
-                // Always land on a clean Idle view for the new
-                // project: no residual query (it was scoped to the
-                // old project), no pre-selected row (so a reflex
-                // Enter doesn't resume the top session by accident),
-                // and no lingering `active_chat_id` pointing at a
-                // chat that belongs to the previous cwd.
-                self.input.clear();
-                self.input_before_picker = None;
+                // Reload skills for the new project: project-scoped
+                // skills live under `<project>/.claude/skills`, so the
+                // palette's skill list differs between projects.
+                self.all_skills = skills::load_skills(
+                    Some(&self.project_path),
+                    self.settings.load_user_settings,
+                )
+                .unwrap_or_default();
+                // If Cmd+P was pressed while in Skills mode (input was
+                // `/...`), drop back into Skills mode in the new
+                // project with that query preserved. Otherwise land
+                // on a clean Idle view.
+                let prev_input = self.input_before_picker.take().unwrap_or_default();
+                let stay_in_skills = prev_input.starts_with('/');
                 self.active_chat_id = None;
                 self.filtered_projects.clear();
                 self.selected_project_index = 0;
-                self.selected_idle_index = 0;
-                self.idle_selection_active = false;
+                if stay_in_skills {
+                    self.input = prev_input;
+                    let query = self.input.strip_prefix('/').unwrap_or("");
+                    self.filtered_skills = if query.is_empty() {
+                        self.all_skills.clone()
+                    } else {
+                        crate::fuzzy::filter_skills(&self.all_skills, query)
+                    };
+                    self.apply_pinned_skill_sort();
+                    self.mode = Mode::Skills;
+                    self.selected_skill_index = 0;
+                } else {
+                    self.mode = Mode::Idle;
+                    self.input.clear();
+                    self.selected_idle_index = 0;
+                    self.idle_selection_active = false;
+                }
                 // Past-sessions list is scoped per-cwd, so a project
                 // switch needs a re-fetch. Also reset the idle scroll
                 // offset: iced retains scrollable position by id, so
@@ -3803,8 +3829,11 @@ impl Slashpad {
 
         // Re-scan the skills directory every time the palette is shown so
         // newly created skills appear without restarting the app.
-        self.all_skills =
-            skills::load_skills(self.settings.load_user_settings).unwrap_or_default();
+        self.all_skills = skills::load_skills(
+            Some(&self.project_path),
+            self.settings.load_user_settings,
+        )
+        .unwrap_or_default();
 
         // Decide what view to restore. The default is "show whatever
         // the user was last looking at" (Chatting, Idle, or Skills with

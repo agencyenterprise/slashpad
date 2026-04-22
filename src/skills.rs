@@ -45,13 +45,24 @@ fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
 }
 
 /// Load every user-invocable skill under `~/.slashpad/.claude/skills`,
-/// and — when `load_user_settings` is true — also under `~/.claude/skills`.
-/// On name collisions the project-level (`~/.slashpad/...`) skill wins,
-/// so Slashpad's bundled skills can't be shadowed by a user skill with
-/// the same name.
-pub fn load_skills(load_user_settings: bool) -> anyhow::Result<Vec<Skill>> {
-    // Project-level first so it wins on name collisions during dedup.
+/// the selected project's `<project>/.claude/skills`, and — when
+/// `load_user_settings` is true — also under `~/.claude/skills`.
+/// Precedence on name collisions: Slashpad-level > project-level > user-level.
+pub fn load_skills(
+    project_path: Option<&Path>,
+    load_user_settings: bool,
+) -> anyhow::Result<Vec<Skill>> {
+    // Slashpad-level first so it wins on name collisions during dedup.
     let mut out = load_skills_from(&skills_dir())?;
+
+    if let Some(project) = project_path {
+        let project_skills = load_skills_from(&project.join(".claude").join("skills"))?;
+        for skill in project_skills {
+            if !out.iter().any(|existing| existing.name == skill.name) {
+                out.push(skill);
+            }
+        }
+    }
 
     if load_user_settings {
         let user = load_skills_from(&user_skills_dir())?;
