@@ -1,4 +1,4 @@
-# Slashpad
+# /slashpad
 
 A desktop AI command palette powered by Claude. Think Raycast, but every "extension" is a natural language skill executed by Claude with real tool access.
 
@@ -8,16 +8,16 @@ Press the global hotkey (default **Ctrl+Space**) → type a command or prompt �
 
 Download the latest release:
 
-- [**Slashpad for Apple Silicon**](https://github.com/agencyenterprise/slashpad/releases/latest/download/Slashpad-darwin-aarch64.dmg)
-- [**Slashpad for Intel**](https://github.com/agencyenterprise/slashpad/releases/latest/download/Slashpad-darwin-x86_64.dmg)
+- [**/slashpad for Apple Silicon**](https://github.com/agencyenterprise/slashpad/releases/latest/download/Slashpad-darwin-aarch64.dmg)
+- [**/slashpad for Intel**](https://github.com/agencyenterprise/slashpad/releases/latest/download/Slashpad-darwin-x86_64.dmg)
 
-Open the DMG, drag **Slashpad** to your Applications folder, and launch it. Press **Ctrl+Space** to open the palette. You can change the hotkey in Settings (click the tray menu icon).
+Open the DMG, drag **/slashpad** to your Applications folder, and launch it. Press **Ctrl+Space** to open the palette. You can change the hotkey in Settings (click the tray menu icon).
 
 See [all releases](https://github.com/agencyenterprise/slashpad/releases) for release notes and older versions.
 
 ## Updating
 
-Slashpad checks for updates automatically and prompts you when a new release is available. You can also grab the latest DMG manually from the [releases page](https://github.com/agencyenterprise/slashpad/releases/latest).
+/slashpad checks for updates automatically and prompts you when a new release is available. You can also grab the latest DMG manually from the [releases page](https://github.com/agencyenterprise/slashpad/releases/latest).
 
 If you built from source, pull the latest and rebuild:
 
@@ -29,7 +29,7 @@ cargo build --release
 
 ## Setup
 
-Slashpad needs access to Claude. Choose one:
+/slashpad needs access to Claude. Choose one:
 
 1. **Claude subscription** (default) — run `claude login` in your terminal. That's it.
 2. **API key** — open Settings from the tray menu icon, uncheck "Use Claude subscription," and paste your Anthropic API key.
@@ -67,13 +67,13 @@ Keep it under 100 words.
 
 ### Creating skills
 
-Slashpad ships with a built-in `/skill-creator` skill (seeded on first run). Type `/skill-creator` in the palette and describe what you want — it walks you through drafting, testing, and refining the skill interactively.
+/slashpad ships with a built-in `/skill-creator` skill (seeded on first run). Type `/skill-creator` in the palette and describe what you want — it walks you through drafting, testing, and refining the skill interactively.
 
 Skills can include bundled resources (scripts, reference docs, templates) and specify which tools Claude should use.
 
 ## External integrations
 
-Slashpad uses [Composio](https://composio.dev) for 1000+ app integrations — Gmail, Slack, GitHub, Google Calendar, and more.
+/slashpad uses [Composio](https://composio.dev) for 1000+ app integrations — Gmail, Slack, GitHub, Google Calendar, and more.
 
 Just ask Claude what you need:
 
