@@ -1,6 +1,6 @@
 {
   "name": "slashpad-sidecar",
-  "version": "0.1.38",
+  "version": "0.1.39",
   "private": true,
   "description": "JS sidecar wrapping the Claude Agent SDK. Spawned by the Rust slashpad binary — not a standalone app.",
   "type": "module",
