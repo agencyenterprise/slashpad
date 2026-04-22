@@ -5,11 +5,10 @@
 //! top: click-drag builds a byte-range selection over the concatenated
 //! span text, Cmd/Ctrl+C copies that range to the system clipboard.
 //!
-//! Rendering note: selection highlight is drawn **per span** — any span
-//! that overlaps the selection range gets its full `span_bounds` filled.
-//! The clipboard text, however, is sliced character-accurately from the
-//! span byte range. This is a deliberate v1 tradeoff: highlight may be a
-//! superset of the copied text when a span is only partially covered.
+//! Rendering note: selection highlight is character-precise — for each
+//! visual line of each overlapping span we binary-search `hit_test` to
+//! find the pixel boundaries of the selected byte range and paint only
+//! that sub-rect. Clipboard text is sliced character-accurately to match.
 
 use iced::advanced::clipboard::{self, Clipboard};
 use iced::advanced::layout;
@@ -298,24 +297,34 @@ where
                 self.spans.as_ref().as_ref();
             let mut cursor_byte: usize = 0;
             for (i, span) in spans_ref.iter().enumerate() {
+                let span_start = cursor_byte;
                 let span_len = span.text.as_ref().len();
-                let span_range = cursor_byte..cursor_byte + span_len;
-                cursor_byte += span_len;
+                let span_end = cursor_byte + span_len;
+                cursor_byte = span_end;
 
-                let overlap_start = range.start.max(span_range.start);
-                let overlap_end = range.end.min(span_range.end);
+                let overlap_start = range.start.max(span_start);
+                let overlap_end = range.end.min(span_end);
                 if overlap_start >= overlap_end {
                     continue;
                 }
 
-                for bounds in state.paragraph.span_bounds(i) {
-                    renderer.fill_quad(
-                        renderer::Quad {
-                            bounds: bounds + translation,
-                            ..Default::default()
-                        },
-                        self.selection_color,
-                    );
+                for rect in state.paragraph.span_bounds(i) {
+                    if let Some(sub) = sub_rect_for_range(
+                        &state.paragraph,
+                        rect,
+                        span_start,
+                        span_end,
+                        overlap_start,
+                        overlap_end,
+                    ) {
+                        renderer.fill_quad(
+                            renderer::Quad {
+                                bounds: sub + translation,
+                                ..Default::default()
+                            },
+                            self.selection_color,
+                        );
+                    }
                 }
             }
         }
@@ -679,6 +688,99 @@ where
 
 fn normalize(a: usize, b: usize) -> (usize, usize) {
     if a <= b { (a, b) } else { (b, a) }
+}
+
+/// Character-precise selection rectangle for a single `span_bounds` line.
+/// See `selectable_bubble::sub_rect_for_range` — same logic. Duplicated
+/// because the two widgets carry different `Paragraph` generics and the
+/// helper can't be shared without extra plumbing.
+fn sub_rect_for_range<P: Paragraph>(
+    paragraph: &P,
+    rect: Rectangle,
+    span_start: usize,
+    span_end: usize,
+    ovr_start: usize,
+    ovr_end: usize,
+) -> Option<Rectangle> {
+    let y = rect.y + rect.height * 0.5;
+    let x_right = rect.x + rect.width;
+
+    let (line_lo, line_hi) = line_byte_range(paragraph, rect, span_start, span_end)?;
+    let clip_start = ovr_start.max(line_lo);
+    let clip_end = ovr_end.min(line_hi);
+    if clip_start >= clip_end {
+        return None;
+    }
+
+    let x_start = if clip_start <= line_lo {
+        rect.x
+    } else {
+        x_for_byte(paragraph, clip_start, y, rect.x, x_right)
+    };
+    let x_end = if clip_end >= line_hi {
+        x_right
+    } else {
+        x_for_byte(paragraph, clip_end, y, rect.x, x_right)
+    };
+
+    if x_end <= x_start {
+        return None;
+    }
+    Some(Rectangle::new(
+        Point::new(x_start, rect.y),
+        Size::new(x_end - x_start, rect.height),
+    ))
+}
+
+fn line_byte_range<P: Paragraph>(
+    paragraph: &P,
+    rect: Rectangle,
+    span_start: usize,
+    span_end: usize,
+) -> Option<(usize, usize)> {
+    let y = rect.y + rect.height * 0.5;
+    let probe_left = paragraph
+        .hit_test(Point::new(rect.x + 0.25, y))
+        .map(|h| match h {
+            Hit::CharOffset(b) => b,
+        });
+    let probe_right = paragraph
+        .hit_test(Point::new((rect.x + rect.width - 0.25).max(rect.x), y))
+        .map(|h| match h {
+            Hit::CharOffset(b) => b,
+        });
+    let left = probe_left.unwrap_or(span_start).clamp(span_start, span_end);
+    let right = probe_right.unwrap_or(span_end).clamp(span_start, span_end);
+    let (lo, hi) = if left <= right { (left, right) } else { (right, left) };
+    if lo >= hi { None } else { Some((lo, hi)) }
+}
+
+fn x_for_byte<P: Paragraph>(
+    paragraph: &P,
+    target: usize,
+    y: f32,
+    x_min: f32,
+    x_max: f32,
+) -> f32 {
+    let mut lo = x_min;
+    let mut hi = x_max;
+    for _ in 0..24 {
+        if hi - lo <= 0.25 {
+            break;
+        }
+        let mid = (lo + hi) * 0.5;
+        match paragraph.hit_test(Point::new(mid, y)) {
+            Some(Hit::CharOffset(b)) => {
+                if b < target {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            None => lo = mid,
+        }
+    }
+    (lo + hi) * 0.5
 }
 
 fn extract<Link, Font>(
