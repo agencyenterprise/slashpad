@@ -289,12 +289,15 @@ where
     Renderer: advanced::text::Renderer<Font = Font>,
 {
     pub fn new(items: &'a [Item], settings: Settings, style: Style) -> Self {
+        // Soft tint of the configured accent color — picks up the user's
+        // accent choice from Settings instead of hardcoding purple.
+        let accent = theme::accent();
         Self {
             items,
             settings,
             style,
             width: Length::Fill,
-            selection_color: Color::from_rgba(0.77, 0.63, 1.0, 0.30),
+            selection_color: Color { a: 0.30, ..accent },
             _phantom: std::marker::PhantomData,
         }
     }
@@ -1026,7 +1029,17 @@ fn hit_block_byte<P: Paragraph>(
         if pos.y >= top && pos.y <= bot {
             let local = Point::new(pos.x - block.offset_x, pos.y - block.offset_y);
             let byte = match block.paragraph.hit_test(local) {
-                Some(Hit::CharOffset(b)) => b,
+                Some(Hit::CharOffset(b)) => {
+                    // b is BufferLine-relative (iced 0.13 only exposes
+                    // cursor.index, not cursor.line). Convert to absolute
+                    // by adding the BufferLine's absolute start offset.
+                    let bl_start = buffer_line_start_at_with(
+                        &block.paragraph,
+                        &block.spans,
+                        local,
+                    );
+                    (bl_start + b).min(block.total_bytes)
+                }
                 None => {
                     // Clamp to start or end depending on horizontal side.
                     if local.x < 0.0 {
@@ -1159,7 +1172,31 @@ fn paint_selection_in_block<Renderer, P>(
     Renderer: advanced::text::Renderer<Font = Font>,
     P: Paragraph,
 {
+    // `paragraph.hit_test` returns a byte index that's relative to the
+    // cosmic-text BufferLine under the probe point, not absolute within
+    // the concatenated span text. Whenever the paragraph contains `\n`
+    // (pulldown-cmark emits fenced code blocks as a single multi-line Text
+    // event, hard breaks produce embedded `\n` too), every line restarts
+    // at 0 and the naive math paints column-0..N on every line.
+    //
+    // Fix: track the current BufferLine's absolute start offset as we
+    // walk rects in visual y-order. probe_left==0 at a new y means a new
+    // BufferLine; probe_left>0 at a new y is a wrap continuation (same
+    // BufferLine); a vertical gap larger than one rect.height indicates
+    // an empty (blank) BufferLine we skipped over.
+    let concat = concat_spans(spans);
+    let line_starts_abs: Vec<usize> = {
+        let mut v = vec![0usize];
+        for (pos, _) in concat.match_indices('\n') {
+            v.push(pos + 1);
+        }
+        v
+    };
+
+    let mut current_bl_idx = 0usize;
+    let mut last_y: Option<f32> = None;
     let mut cursor_byte = 0usize;
+
     for (i, span) in spans.iter().enumerate() {
         let span_start = cursor_byte;
         let len = span.text.as_ref().len();
@@ -1168,11 +1205,39 @@ fn paint_selection_in_block<Renderer, P>(
 
         let overlap_start = range.start.max(span_start);
         let overlap_end = range.end.min(span_end);
-        if overlap_start >= overlap_end {
-            continue;
-        }
 
         for rect in paragraph.span_bounds(i) {
+            let y_mid = rect.y + rect.height * 0.5;
+            let probe_left = paragraph
+                .hit_test(Point::new(rect.x + 0.25, y_mid))
+                .map(|h| match h {
+                    Hit::CharOffset(b) => b,
+                })
+                .unwrap_or(0);
+
+            if let Some(ly) = last_y {
+                // New BufferLine when the rect moves to a fresh y AND the
+                // probe at the far-left returns 0. `probe_left > 0` at a
+                // new y means a wrap continuation of the same BufferLine.
+                // If the vertical gap spans more than one rect.height,
+                // empty BufferLines sit in between (they carry no glyphs,
+                // so no rect) — account for them.
+                if rect.y > ly + 0.5 && probe_left == 0 {
+                    let line_h = rect.height.max(1.0);
+                    let gap_lines =
+                        ((rect.y - ly - line_h) / line_h).max(0.0).round() as usize;
+                    current_bl_idx = (current_bl_idx + 1 + gap_lines)
+                        .min(line_starts_abs.len().saturating_sub(1));
+                }
+            }
+            last_y = Some(rect.y);
+
+            if overlap_start >= overlap_end {
+                continue;
+            }
+
+            let bl_start = line_starts_abs[current_bl_idx];
+
             if let Some(sub) = sub_rect_for_range(
                 paragraph,
                 rect,
@@ -1180,6 +1245,7 @@ fn paint_selection_in_block<Renderer, P>(
                 span_end,
                 overlap_start,
                 overlap_end,
+                bl_start,
             ) {
                 renderer.fill_quad(
                     renderer::Quad {
@@ -1191,6 +1257,80 @@ fn paint_selection_in_block<Renderer, P>(
             }
         }
     }
+}
+
+/// Byte offset of the start of the BufferLine that contains `abs_byte` —
+/// i.e. the byte after the last `\n` before `abs_byte`, or 0 if none.
+fn buffer_line_start_before(concat: &str, abs_byte: usize) -> usize {
+    let cap = abs_byte.min(concat.len());
+    concat[..cap].rfind('\n').map(|i| i + 1).unwrap_or(0)
+}
+
+/// Find the BufferLine's absolute start offset for a `local` point inside a
+/// block's paragraph. A single span can span many BufferLines (pulldown-cmark
+/// emits an entire fenced code block as one Text event), so span-level
+/// bookkeeping isn't enough — we replay the same y-ordered rect walk that
+/// `paint_selection_in_block` uses and return the BufferLine start of the
+/// rect that visually contains the point.
+fn buffer_line_start_at_with<P: Paragraph>(
+    paragraph: &P,
+    spans: &[Span<'static, Url>],
+    local: Point,
+) -> usize {
+    let concat = concat_spans(spans);
+    let line_starts_abs: Vec<usize> = {
+        let mut v = vec![0usize];
+        for (pos, _) in concat.match_indices('\n') {
+            v.push(pos + 1);
+        }
+        v
+    };
+
+    let mut current_bl_idx = 0usize;
+    let mut last_y: Option<f32> = None;
+    let mut best: Option<(f32, usize)> = None;
+
+    for (i, _span) in spans.iter().enumerate() {
+        for rect in paragraph.span_bounds(i) {
+            let y_mid = rect.y + rect.height * 0.5;
+            let probe_left = paragraph
+                .hit_test(Point::new(rect.x + 0.25, y_mid))
+                .map(|h| match h {
+                    Hit::CharOffset(b) => b,
+                })
+                .unwrap_or(0);
+            if let Some(ly) = last_y {
+                if rect.y > ly + 0.5 && probe_left == 0 {
+                    let line_h = rect.height.max(1.0);
+                    let gap_lines =
+                        ((rect.y - ly - line_h) / line_h).max(0.0).round() as usize;
+                    current_bl_idx = (current_bl_idx + 1 + gap_lines)
+                        .min(line_starts_abs.len().saturating_sub(1));
+                }
+            }
+            last_y = Some(rect.y);
+
+            if local.y >= rect.y
+                && local.y <= rect.y + rect.height
+                && local.x >= rect.x
+                && local.x <= rect.x + rect.width
+            {
+                return line_starts_abs[current_bl_idx];
+            }
+
+            let dy = if local.y < rect.y {
+                rect.y - local.y
+            } else if local.y > rect.y + rect.height {
+                local.y - (rect.y + rect.height)
+            } else {
+                0.0
+            };
+            if best.is_none_or(|(d, _)| dy < d) {
+                best = Some((dy, line_starts_abs[current_bl_idx]));
+            }
+        }
+    }
+    best.map(|(_, s)| s).unwrap_or(0)
 }
 
 /// Given a per-line `span_bounds` rect for a span covering bytes
@@ -1207,11 +1347,13 @@ fn sub_rect_for_range<P: Paragraph>(
     span_end: usize,
     ovr_start: usize,
     ovr_end: usize,
+    bl_start: usize,
 ) -> Option<Rectangle> {
     let y = rect.y + rect.height * 0.5;
     let x_right = rect.x + rect.width;
 
-    let (line_lo, line_hi) = line_byte_range(paragraph, rect, span_start, span_end)?;
+    let (line_lo, line_hi) =
+        line_byte_range(paragraph, rect, span_start, span_end, bl_start)?;
     let clip_start = ovr_start.max(line_lo);
     let clip_end = ovr_end.min(line_hi);
     if clip_start >= clip_end {
@@ -1221,12 +1363,12 @@ fn sub_rect_for_range<P: Paragraph>(
     let x_start = if clip_start <= line_lo {
         rect.x
     } else {
-        x_for_byte(paragraph, clip_start, y, rect.x, x_right)
+        x_for_byte(paragraph, clip_start, y, rect.x, x_right, bl_start)
     };
     let x_end = if clip_end >= line_hi {
         x_right
     } else {
-        x_for_byte(paragraph, clip_end, y, rect.x, x_right)
+        x_for_byte(paragraph, clip_end, y, rect.x, x_right, bl_start)
     };
 
     if x_end <= x_start {
@@ -1243,17 +1385,18 @@ fn line_byte_range<P: Paragraph>(
     rect: Rectangle,
     span_start: usize,
     span_end: usize,
+    bl_start: usize,
 ) -> Option<(usize, usize)> {
     let y = rect.y + rect.height * 0.5;
     let probe_left = paragraph
         .hit_test(Point::new(rect.x + 0.25, y))
         .map(|h| match h {
-            Hit::CharOffset(b) => b,
+            Hit::CharOffset(b) => b + bl_start,
         });
     let probe_right = paragraph
         .hit_test(Point::new((rect.x + rect.width - 0.25).max(rect.x), y))
         .map(|h| match h {
-            Hit::CharOffset(b) => b,
+            Hit::CharOffset(b) => b + bl_start,
         });
     let left = probe_left.unwrap_or(span_start).clamp(span_start, span_end);
     let right = probe_right.unwrap_or(span_end).clamp(span_start, span_end);
@@ -1264,14 +1407,18 @@ fn line_byte_range<P: Paragraph>(
 /// Binary-search x within [x_min, x_max] at the given `y` to find the
 /// pixel where `hit_test` transitions from returning `< target` to `>=
 /// target`. Assumes hit_test is monotonic in x along this visual line
-/// (true for LTR text, which is all we deal with).
+/// (true for LTR text, which is all we deal with). `target` is in absolute
+/// paragraph bytes; hit_test returns BufferLine-relative, so we compare
+/// against `target - bl_start`.
 fn x_for_byte<P: Paragraph>(
     paragraph: &P,
     target: usize,
     y: f32,
     x_min: f32,
     x_max: f32,
+    bl_start: usize,
 ) -> f32 {
+    let target_local = target.saturating_sub(bl_start);
     let mut lo = x_min;
     let mut hi = x_max;
     for _ in 0..24 {
@@ -1281,7 +1428,7 @@ fn x_for_byte<P: Paragraph>(
         let mid = (lo + hi) * 0.5;
         match paragraph.hit_test(Point::new(mid, y)) {
             Some(Hit::CharOffset(b)) => {
-                if b < target {
+                if b < target_local {
                     lo = mid;
                 } else {
                     hi = mid;

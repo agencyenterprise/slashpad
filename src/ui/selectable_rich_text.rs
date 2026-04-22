@@ -71,9 +71,12 @@ where
             align_y: alignment::Vertical::Top,
             wrapping: Wrapping::default(),
             class: Theme::default(),
-            // Soft accent-ish blue, readable against the dark chat surface.
-            // Tweaked to be subtle but visible.
-            selection_color: Color::from_rgba(0.77, 0.63, 1.0, 0.30),
+            // Soft tint of the configured accent color — picks up the
+            // user's accent choice from Settings instead of a fixed hue.
+            selection_color: Color {
+                a: 0.30,
+                ..crate::ui::theme::accent()
+            },
         }
     }
 
@@ -295,6 +298,22 @@ where
         if let Some(range) = state.selection.as_ref() {
             let spans_ref: &[Span<'a, Link, Renderer::Font>] =
                 self.spans.as_ref().as_ref();
+            // hit_test returns cursor.index which is BufferLine-relative;
+            // convert to absolute using the BufferLine start derived from
+            // the concatenated span text. A single span may span multiple
+            // BufferLines (embedded `\n`, hard breaks), so we track the
+            // current BufferLine per-rect as we walk in y-order rather
+            // than per-span.
+            let concat = concat_text(spans_ref);
+            let line_starts_abs: Vec<usize> = {
+                let mut v = vec![0usize];
+                for (pos, _) in concat.match_indices('\n') {
+                    v.push(pos + 1);
+                }
+                v
+            };
+            let mut current_bl_idx = 0usize;
+            let mut last_y: Option<f32> = None;
             let mut cursor_byte: usize = 0;
             for (i, span) in spans_ref.iter().enumerate() {
                 let span_start = cursor_byte;
@@ -304,11 +323,35 @@ where
 
                 let overlap_start = range.start.max(span_start);
                 let overlap_end = range.end.min(span_end);
-                if overlap_start >= overlap_end {
-                    continue;
-                }
 
                 for rect in state.paragraph.span_bounds(i) {
+                    let y_mid = rect.y + rect.height * 0.5;
+                    let probe_left = state
+                        .paragraph
+                        .hit_test(Point::new(rect.x + 0.25, y_mid))
+                        .map(|h| match h {
+                            Hit::CharOffset(b) => b,
+                        })
+                        .unwrap_or(0);
+                    if let Some(ly) = last_y {
+                        if rect.y > ly + 0.5 && probe_left == 0 {
+                            let line_h = rect.height.max(1.0);
+                            let gap_lines = ((rect.y - ly - line_h) / line_h)
+                                .max(0.0)
+                                .round()
+                                as usize;
+                            current_bl_idx = (current_bl_idx + 1 + gap_lines)
+                                .min(line_starts_abs.len().saturating_sub(1));
+                        }
+                    }
+                    last_y = Some(rect.y);
+
+                    if overlap_start >= overlap_end {
+                        continue;
+                    }
+
+                    let bl_start = line_starts_abs[current_bl_idx];
+
                     if let Some(sub) = sub_rect_for_range(
                         &state.paragraph,
                         rect,
@@ -316,6 +359,7 @@ where
                         span_end,
                         overlap_start,
                         overlap_end,
+                        bl_start,
                     ) {
                         renderer.fill_quad(
                             renderer::Quad {
@@ -423,10 +467,12 @@ where
                         .state
                         .downcast_mut::<State<Link, Renderer::Paragraph>>();
 
-                    let byte = match state.paragraph.hit_test(position) {
-                        Some(Hit::CharOffset(i)) => i,
-                        None => 0,
-                    };
+                    let byte = hit_test_absolute(
+                        &state.paragraph,
+                        self.spans.as_ref().as_ref(),
+                        position,
+                    )
+                    .unwrap_or(0);
 
                     // Multi-click tracking: advance count on rapid clicks
                     // landing near the same byte; otherwise reset to 1.
@@ -540,9 +586,11 @@ where
                     // outside, selection keeps its last value.
                     if let Some(position) = cursor.position_in(layout.bounds())
                     {
-                        if let Some(Hit::CharOffset(byte)) =
-                            state.paragraph.hit_test(position)
-                        {
+                        if let Some(byte) = hit_test_absolute(
+                            &state.paragraph,
+                            self.spans.as_ref().as_ref(),
+                            position,
+                        ) {
                             if byte != drag.cursor {
                                 drag.cursor = byte;
                                 let (lo, hi) =
@@ -690,6 +738,80 @@ fn normalize(a: usize, b: usize) -> (usize, usize) {
     if a <= b { (a, b) } else { (b, a) }
 }
 
+/// Hit-test that returns an absolute byte offset in the concatenated span
+/// text. Iced 0.13's `Paragraph::hit_test` exposes only `cursor.index`
+/// (byte within a BufferLine), so a paragraph that embeds `\n` resets the
+/// returned index to 0 on every line. Walk the span rects in visual
+/// y-order, tracking the BufferLine index (new when `probe_left==0` at a
+/// new y; vertical gaps account for empty BufferLines that carry no rect),
+/// and use the BufferLine start of the rect containing the point.
+fn hit_test_absolute<Link, Font, P>(
+    paragraph: &P,
+    spans: &[Span<'_, Link, Font>],
+    point: Point,
+) -> Option<usize>
+where
+    P: Paragraph,
+{
+    let Hit::CharOffset(local) = paragraph.hit_test(point)?;
+    let concat = concat_text(spans);
+    let line_starts_abs: Vec<usize> = {
+        let mut v = vec![0usize];
+        for (pos, _) in concat.match_indices('\n') {
+            v.push(pos + 1);
+        }
+        v
+    };
+
+    let mut current_bl_idx = 0usize;
+    let mut last_y: Option<f32> = None;
+    let mut best: Option<(f32, usize)> = None;
+
+    for (i, _span) in spans.iter().enumerate() {
+        for rect in paragraph.span_bounds(i) {
+            let y_mid = rect.y + rect.height * 0.5;
+            let probe_left = paragraph
+                .hit_test(Point::new(rect.x + 0.25, y_mid))
+                .map(|h| match h {
+                    Hit::CharOffset(b) => b,
+                })
+                .unwrap_or(0);
+            if let Some(ly) = last_y {
+                if rect.y > ly + 0.5 && probe_left == 0 {
+                    let line_h = rect.height.max(1.0);
+                    let gap_lines =
+                        ((rect.y - ly - line_h) / line_h).max(0.0).round() as usize;
+                    current_bl_idx = (current_bl_idx + 1 + gap_lines)
+                        .min(line_starts_abs.len().saturating_sub(1));
+                }
+            }
+            last_y = Some(rect.y);
+
+            if point.y >= rect.y
+                && point.y <= rect.y + rect.height
+                && point.x >= rect.x
+                && point.x <= rect.x + rect.width
+            {
+                return Some(
+                    (line_starts_abs[current_bl_idx] + local).min(concat.len()),
+                );
+            }
+            let dy = if point.y < rect.y {
+                rect.y - point.y
+            } else if point.y > rect.y + rect.height {
+                point.y - (rect.y + rect.height)
+            } else {
+                0.0
+            };
+            if best.is_none_or(|(d, _)| dy < d) {
+                best = Some((dy, line_starts_abs[current_bl_idx]));
+            }
+        }
+    }
+    let bl_start = best.map(|(_, s)| s).unwrap_or(0);
+    Some((bl_start + local).min(concat.len()))
+}
+
 /// Character-precise selection rectangle for a single `span_bounds` line.
 /// See `selectable_bubble::sub_rect_for_range` — same logic. Duplicated
 /// because the two widgets carry different `Paragraph` generics and the
@@ -701,11 +823,13 @@ fn sub_rect_for_range<P: Paragraph>(
     span_end: usize,
     ovr_start: usize,
     ovr_end: usize,
+    bl_start: usize,
 ) -> Option<Rectangle> {
     let y = rect.y + rect.height * 0.5;
     let x_right = rect.x + rect.width;
 
-    let (line_lo, line_hi) = line_byte_range(paragraph, rect, span_start, span_end)?;
+    let (line_lo, line_hi) =
+        line_byte_range(paragraph, rect, span_start, span_end, bl_start)?;
     let clip_start = ovr_start.max(line_lo);
     let clip_end = ovr_end.min(line_hi);
     if clip_start >= clip_end {
@@ -715,12 +839,12 @@ fn sub_rect_for_range<P: Paragraph>(
     let x_start = if clip_start <= line_lo {
         rect.x
     } else {
-        x_for_byte(paragraph, clip_start, y, rect.x, x_right)
+        x_for_byte(paragraph, clip_start, y, rect.x, x_right, bl_start)
     };
     let x_end = if clip_end >= line_hi {
         x_right
     } else {
-        x_for_byte(paragraph, clip_end, y, rect.x, x_right)
+        x_for_byte(paragraph, clip_end, y, rect.x, x_right, bl_start)
     };
 
     if x_end <= x_start {
@@ -737,17 +861,18 @@ fn line_byte_range<P: Paragraph>(
     rect: Rectangle,
     span_start: usize,
     span_end: usize,
+    bl_start: usize,
 ) -> Option<(usize, usize)> {
     let y = rect.y + rect.height * 0.5;
     let probe_left = paragraph
         .hit_test(Point::new(rect.x + 0.25, y))
         .map(|h| match h {
-            Hit::CharOffset(b) => b,
+            Hit::CharOffset(b) => b + bl_start,
         });
     let probe_right = paragraph
         .hit_test(Point::new((rect.x + rect.width - 0.25).max(rect.x), y))
         .map(|h| match h {
-            Hit::CharOffset(b) => b,
+            Hit::CharOffset(b) => b + bl_start,
         });
     let left = probe_left.unwrap_or(span_start).clamp(span_start, span_end);
     let right = probe_right.unwrap_or(span_end).clamp(span_start, span_end);
@@ -761,7 +886,9 @@ fn x_for_byte<P: Paragraph>(
     y: f32,
     x_min: f32,
     x_max: f32,
+    bl_start: usize,
 ) -> f32 {
+    let target_local = target.saturating_sub(bl_start);
     let mut lo = x_min;
     let mut hi = x_max;
     for _ in 0..24 {
@@ -771,7 +898,7 @@ fn x_for_byte<P: Paragraph>(
         let mid = (lo + hi) * 0.5;
         match paragraph.hit_test(Point::new(mid, y)) {
             Some(Hit::CharOffset(b)) => {
-                if b < target {
+                if b < target_local {
                     lo = mid;
                 } else {
                     hi = mid;
