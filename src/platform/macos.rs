@@ -260,6 +260,54 @@ pub fn cursor_monitor_frame() -> Option<(f64, f64, f64, f64)> {
     ))
 }
 
+/// Fingerprint of the screen the cursor is currently on, used to key
+/// per-screen palette drag memory. Returns `None` only if AppKit can't
+/// be queried (not on the main thread, or no screens attached).
+pub fn cursor_screen_key() -> Option<crate::state::ScreenKey> {
+    let (x, y, w, h) = cursor_monitor_frame()?;
+    Some(crate::state::ScreenKey {
+        x: x.round() as i32,
+        y: y.round() as i32,
+        w: w.round() as i32,
+        h: h.round() as i32,
+    })
+}
+
+/// Given a point in iced/winit's top-left-origin coordinate space
+/// (relative to the primary monitor), return the `ScreenKey` of the
+/// NSScreen whose frame contains it. Used by `WindowMoved` to attribute
+/// a user drag to the correct screen — dragging the palette across
+/// monitors updates only the destination screen's remembered position.
+pub fn screen_key_for_point(point: iced::Point) -> Option<crate::state::ScreenKey> {
+    let mtm = MainThreadMarker::new()?;
+    let screens = NSScreen::screens(mtm);
+    if screens.count() == 0 {
+        return None;
+    }
+    let primary: Retained<NSScreen> = unsafe { screens.objectAtIndex(0) };
+    let primary_h = primary.frame().size.height;
+    // Convert top-left iced coords back to NS bottom-left.
+    let ns_x = point.x as f64;
+    let ns_y = primary_h - point.y as f64;
+    for i in 0..screens.count() {
+        let screen = unsafe { screens.objectAtIndex(i) };
+        let frame: NSRect = screen.frame();
+        if ns_x >= frame.origin.x
+            && ns_x < frame.origin.x + frame.size.width
+            && ns_y >= frame.origin.y
+            && ns_y < frame.origin.y + frame.size.height
+        {
+            return Some(crate::state::ScreenKey {
+                x: frame.origin.x.round() as i32,
+                y: frame.origin.y.round() as i32,
+                w: frame.size.width.round() as i32,
+                h: frame.size.height.round() as i32,
+            });
+        }
+    }
+    None
+}
+
 /// Top-left coordinate (in iced/winit logical points, anchored to the primary
 /// monitor) at which to place a window of the given `width` so that it is
 /// horizontally centered on the cursor's current monitor and offset ~20% from

@@ -94,7 +94,6 @@ Claude handles installing Composio and linking your accounts automatically. The 
 | `⌘+Enter` | Fire & forget (send and dismiss) |
 | `⌘+P` | Switch project |
 | `⌘+T` | Open session in terminal |
-| `⌘+Shift+A` | Anchor chat (keep palette + current chat in place) |
 | `Ctrl+C` | Cancel generation |
 | `Escape` | Dismiss or go back |
 

@@ -203,31 +203,15 @@ pub struct SessionInfo {
 /// once the `SessionId` event arrives.
 pub type ChatId = u64;
 
-/// A user "anchor" — captured when they press Cmd+Shift+A. Unifies
-/// two previously separate concepts ("anchor window position" and
-/// "stick chat"): anchoring always locks the palette's position, and
-/// *also* locks the current chat if the user anchored while viewing
-/// one. Distinct from the list-level "pin" feature (⌘K → Pin session
-/// / skill / project), which reorders rows to the top of a list.
-///
-/// Lifecycle:
-/// - Created by `Message::ToggleAnchor` (or its async cousin
-///   `Message::CommitAnchor` when the current position wasn't
-///   already known from a drag).
-/// - `position` tracks subsequent user drags while anchored (see
-///   `Message::WindowMoved`).
-/// - `chat_id` is set from `active_chat_id` at anchor time if the
-///   user was in `Mode::Chatting`. It survives navigation — summoning
-///   the palette later jumps back into the anchored chat regardless
-///   of where the user navigated. Degrades to `None` inline in
-///   `show_palette` if the referenced chat has since been removed.
-/// - Cleared entirely by a second Cmd+Shift+A (unanchor).
-///
-/// In-memory only — does not persist across app restarts.
-#[derive(Debug, Clone, Copy)]
-pub struct Anchor {
-    pub position: iced::Point,
-    pub chat_id: Option<ChatId>,
+/// Fingerprint of a display, used as the key for per-screen palette
+/// drag memory. Built from an `NSScreen` frame rect: stable within a
+/// session as long as the display configuration doesn't change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ScreenKey {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

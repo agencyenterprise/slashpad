@@ -11,7 +11,7 @@
 //!   Save or Quit. Each open creates a fresh window id; the close_events
 //!   subscription drains the cleanup.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
 use iced::futures::{SinkExt, Stream};
@@ -165,7 +165,7 @@ use crate::settings::{AppSettings, PreferredTerminal};
 use crate::sidecar::{self, FollowUp, Payload, SidecarEvent, SpawnedSidecar};
 use crate::skills;
 use crate::state::{
-    is_archived, is_pinned, new_pin_tag, pin_tag_with, pin_timestamp, Anchor, ChatId,
+    is_archived, is_pinned, new_pin_tag, pin_tag_with, pin_timestamp, ChatId, ScreenKey,
     ChatMessageView, ChatState, ChatStatus, Mode, SessionInfo, Skill, TAG_ARCHIVED,
 };
 use crate::ui;
@@ -414,25 +414,10 @@ pub enum Message {
     /// the top of the palette — kick off a native OS window drag that
     /// follows the cursor until the mouse button is released.
     DragWindow,
-    /// Cmd+Shift+A — toggle the anchor. Anchoring snapshots the
-    /// palette's current on-screen position and, if the user is viewing
-    /// a chat, that chat id too — so summoning the palette later
-    /// restores both. Pressing again fully unanchors: the window snaps
-    /// back to cursor-center on the next summon and the Skills prefill
-    /// returns. See `crate::state::Anchor` for lifecycle details.
-    ToggleAnchor,
-    /// Resolution of the `iced::window::get_position` lookup kicked off
-    /// by a fresh anchor when the user hadn't already dragged the
-    /// window. Arrives after the async runtime reads the palette's
-    /// actual on-screen position; we commit it (together with the
-    /// current chat id, if any) as `self.anchored`. `None` means the
-    /// window wasn't available (shouldn't happen while the palette is
-    /// visible, but handled as a no-op rather than panicking).
-    CommitAnchor(Option<iced::Point>),
     /// Window position changed. Fired both by user drags and by our own
     /// programmatic `iced::window::move_to` calls; `update` distinguishes
     /// them via `programmatic_move_pending` so only user drags are
-    /// persisted into `dragged_position`.
+    /// persisted into `dragged_positions`.
     WindowMoved {
         window_id: iced::window::Id,
         position: iced::Point,
@@ -607,23 +592,25 @@ pub struct Slashpad {
     /// backing out of Cmd+P doesn't destroy whatever they were typing.
     pub input_before_picker: Option<String>,
 
-    /// Position the user has dragged the palette window to. When `Some`,
-    /// `show_palette()` skips the cursor-center `move_to` and lets the
-    /// NSPanel reappear wherever the user last left it. Reset to `None`
-    /// whenever `start_chat` / `start_chat_detached` creates a fresh
-    /// chat, so each new chat opens at the cursor again.
-    pub dragged_position: Option<iced::Point>,
-    /// The user's current anchor (Cmd+Shift+A). Unified "stay put"
-    /// state: captures the palette's on-screen position *and*, if
-    /// anchored while viewing a chat, the chat id to reopen on every
-    /// future summon. See `crate::state::Anchor` for lifecycle
-    /// details. In-memory only.
-    pub anchored: Option<Anchor>,
+    /// Per-screen positions the user has dragged the palette window
+    /// to. Keyed by `ScreenKey` (an NSScreen frame fingerprint). When
+    /// `show_palette()` runs, it looks up the cursor's current screen
+    /// and reuses the stored position if one exists; otherwise the
+    /// palette cursor-centers on that screen. Raycast-style: dragging
+    /// on monitor A doesn't affect monitor B's position. In-memory only.
+    pub dragged_positions: HashMap<ScreenKey, iced::Point>,
     /// Armed right before we issue `iced::window::move_to` so the
     /// `window::Event::Moved` fired by that programmatic move isn't
     /// mistaken for a user drag. Cleared by the first `WindowMoved`
     /// observed after arming.
     pub programmatic_move_pending: bool,
+    /// When true, the next `show_palette()` forces the palette back to
+    /// `Mode::Skills` with `/` prefilled instead of restoring the
+    /// previous view. Set when the palette hides while in Skills mode
+    /// or when a skill is fired-and-forgotten (Cmd+Enter) — both cases
+    /// where bringing back the same view would be stale. Cleared on
+    /// open after being consumed.
+    pub reset_to_skills_on_next_open: bool,
 
     /// Update check / upgrade lifecycle state. Driven by the settings
     /// title row — checked on each settings-window open.
@@ -738,9 +725,12 @@ impl Slashpad {
             filtered_projects: Vec::new(),
             selected_project_index: 0,
             input_before_picker: None,
-            dragged_position: None,
-            anchored: None,
+            dragged_positions: HashMap::new(),
             programmatic_move_pending: false,
+            // First-ever launch: default to the Skills prompt so the
+            // user sees the picker immediately. Future opens restore
+            // whatever view they were in when the palette was hidden.
+            reset_to_skills_on_next_open: true,
             update_status: UpdateStatus::Idle,
         };
 
@@ -956,12 +946,6 @@ impl Slashpad {
 
         // Cmd+letter shortcuts. `ShortcutFilter` prevents the letter
         // from leaking into text_input; we don't need post-hoc stripping.
-        if modifiers.command()
-            && modifiers.shift()
-            && matches!(key.as_ref(), Key::Character("a") | Key::Character("A"))
-        {
-            return Some(Message::ToggleAnchor);
-        }
         if modifiers.command() && matches!(key.as_ref(), Key::Character("p")) {
             return Some(Message::OpenProjectPicker);
         }
@@ -1631,89 +1615,19 @@ impl Slashpad {
                 if Some(window_id) == self.palette_window_id {
                     if self.programmatic_move_pending {
                         // Our own `move_to` in `show_palette` — eat the
-                        // event without updating `dragged_position` so
-                        // the next cursor-center open doesn't look like
-                        // a user drag.
+                        // event so it isn't logged as a user drag.
                         self.programmatic_move_pending = false;
                     } else {
-                        self.dragged_position = Some(position);
-                        // If the user drags while anchored, the anchor
-                        // follows: otherwise they'd have to unanchor-drag-
-                        // reanchor to relocate an anchored palette, which
-                        // is annoying.
-                        if let Some(anchor) = &mut self.anchored {
-                            anchor.position = position;
+                        // Attribute the drag to whichever screen now
+                        // contains the palette. Walking NSScreen::screens
+                        // from a top-left point lets dragging across
+                        // monitors update the correct entry.
+                        #[cfg(target_os = "macos")]
+                        if let Some(key) =
+                            crate::platform::macos::screen_key_for_point(position)
+                        {
+                            self.dragged_positions.insert(key, position);
                         }
-                    }
-                }
-                Task::none()
-            }
-
-            Message::ToggleAnchor => {
-                // Anchor is a chat-only affordance — the shortcut is
-                // inert everywhere else (the keyhints bar only advertises
-                // it in Chatting, but the chord is globally reserved by
-                // `ShortcutFilter`, so we still receive the message in
-                // other modes and drop it here).
-                if self.mode != Mode::Chatting {
-                    return Task::none();
-                }
-                if self.anchored.is_some() {
-                    // Unanchor → full reset to the default cursor-centered
-                    // behavior. Clear both stored positions and actively
-                    // move the window back now so the user sees the
-                    // effect immediately (not on next hide/show). The
-                    // chat portion of the anchor (if any) is released at
-                    // the same time — unanchor is atomic.
-                    self.anchored = None;
-                    self.dragged_position = None;
-                    #[cfg(target_os = "macos")]
-                    if let Some(id) = self.palette_window_id {
-                        if let Some((x, y)) = crate::platform::macos::cursor_palette_position(
-                            Self::LAUNCHER_W as f64,
-                        ) {
-                            self.programmatic_move_pending = true;
-                            return iced::window::move_to(
-                                id,
-                                iced::Point::new(x as f32, y as f32),
-                            );
-                        }
-                    }
-                } else {
-                    // Anchor → capture the active chat and current position.
-                    let chat_id = self.active_chat_id;
-                    if let Some(position) = self.dragged_position {
-                        self.anchored = Some(Anchor { position, chat_id });
-                    } else if let Some(id) = self.palette_window_id {
-                        // User hasn't dragged yet — anchor wherever the
-                        // palette currently sits on screen. We don't track
-                        // position continuously (the
-                        // `programmatic_move_pending` flag swallows the
-                        // initial cursor-center `Moved` event so it isn't
-                        // mistaken for a drag), so read it now via
-                        // `get_position`. The resolved Task dispatches
-                        // `CommitAnchor` which reads the chat id fresh at
-                        // commit time and finalises the anchor.
-                        return iced::window::get_position(id).map(Message::CommitAnchor);
-                    }
-                }
-                Task::none()
-            }
-
-            Message::CommitAnchor(point) => {
-                if let Some(position) = point {
-                    // Only commit if the user hasn't managed to drag,
-                    // toggle, or leave Chatting in the tiny window
-                    // between kicking off the async read and this
-                    // handler firing.
-                    if self.mode == Mode::Chatting
-                        && self.anchored.is_none()
-                        && self.dragged_position.is_none()
-                    {
-                        self.anchored = Some(Anchor {
-                            position,
-                            chat_id: self.active_chat_id,
-                        });
                     }
                 }
                 Task::none()
@@ -2659,7 +2573,6 @@ impl Slashpad {
                     .unwrap_or(false),
                 skill_locked: self.locked_skill().is_some(),
                 project_path_display: display_project_path(&self.project_path),
-                anchored: self.anchored.is_some(),
                 session_menu_open: self.session_menu_open,
                 can_open_options,
                 session_menu_selected: self.session_menu_selected,
@@ -2925,11 +2838,6 @@ impl Slashpad {
     }
 
     fn start_chat(&mut self, prompt: String) -> Task<Message> {
-        // Fresh chat → forget any position the user dragged the palette
-        // to during a previous chat. The next `show_palette()` will
-        // cursor-center again, matching the "new task, fresh location"
-        // UX the user confirmed.
-        self.dragged_position = None;
         let chat_id = self.alloc_chat_id();
         let spawned = match self.spawn_sidecar_chat(chat_id, prompt.clone(), None) {
             Ok(s) => s,
@@ -2981,10 +2889,6 @@ impl Slashpad {
     /// Used by the Cmd+Enter "fire & forget" flow: the chat streams in
     /// the background and the palette is dismissed immediately.
     fn start_chat_detached(&mut self, prompt: String) -> Task<Message> {
-        // Same reset as `start_chat` — Cmd+Enter "fire and forget" is
-        // still a new chat, so the next palette summon should cursor-
-        // follow rather than snap back to the previous drag position.
-        self.dragged_position = None;
         let chat_id = self.alloc_chat_id();
         match self.spawn_sidecar_chat(chat_id, prompt.clone(), None) {
             Ok(spawned) => {
@@ -3902,42 +3806,30 @@ impl Slashpad {
         self.all_skills =
             skills::load_skills(self.settings.load_user_settings).unwrap_or_default();
 
-        // If the user has anchored a chat (Cmd+Shift+A while viewing
-        // one) and that chat is still alive, re-enter it directly.
-        // Otherwise fall through to the default "open into Skills with
-        // `/` prefilled" behavior. A position-only anchor goes through
-        // the same fall-through — it only affects window placement.
-        let anchored_chat_id = self
-            .anchored
-            .and_then(|a| a.chat_id)
-            .filter(|id| self.chats.contains_key(id));
+        // Decide what view to restore. The default is "show whatever
+        // the user was last looking at" (Chatting, Idle, or Skills with
+        // preserved input). The reset flag overrides this and forces
+        // the Skills picker with `/` prefilled — set by `hide_palette`
+        // when the user dismissed while in Skills mode, or when a
+        // skill was fire-and-forgotten.
+        let force_reset = self.reset_to_skills_on_next_open
+            || matches!(self.mode, Mode::Settings | Mode::ProjectPicker)
+            || (self.mode == Mode::Chatting
+                && self
+                    .active_chat_id
+                    .map(|id| !self.chats.contains_key(&id))
+                    .unwrap_or(true));
+        self.reset_to_skills_on_next_open = false;
 
-        if let Some(chat_id) = anchored_chat_id {
-            self.mode = Mode::Chatting;
-            self.active_chat_id = Some(chat_id);
-            self.input.clear();
-        } else {
-            // Defensive: if the anchored chat has since been closed,
-            // drop just the chat portion of the anchor while keeping
-            // the anchored position intact.
-            if let Some(anchor) = &mut self.anchored {
-                if anchor.chat_id.is_some() {
-                    anchor.chat_id = None;
-                }
-            }
-            // Default: open into the skills picker with "/" prefilled.
-            // Users reach the unified Idle list (active chats + past
-            // sessions) by backspacing the "/" away —
-            // `Message::InputChanged` flips the mode to Idle automatically
-            // when the leading "/" is removed.
+        if force_reset {
             self.mode = Mode::Skills;
             self.input = "/".to_string();
             self.filtered_skills = self.all_skills.clone();
             self.apply_pinned_skill_sort();
             self.selected_skill_index = 0;
         }
-        // Never clear `self.chats` or `self.active_chat_id` — those
-        // carry the state the user expects to come back to.
+        // Otherwise leave `self.mode`, `self.input`, `self.active_chat_id`,
+        // and selections alone — the last view is restored as-is.
 
         let Some(id) = self.palette_window_id else {
             return Task::none();
@@ -3960,21 +3852,21 @@ impl Slashpad {
 
         let mut tasks: Vec<Task<Message>> = Vec::with_capacity(4);
         tasks.push(style_task);
-        // Skip cursor-centering if the user has previously dragged the
-        // palette in this session (or anchored it permanently): the
-        // NSPanel retains its frame across `orderOut`/`orderFrontRegardless`,
-        // so letting it reappear where they put it is the "just show it
-        // where I left it" experience. `dragged_position` is cleared by
-        // `start_chat` / `start_chat_detached` so each fresh chat cursor-
-        // follows; the anchor is NOT cleared there — that's the whole
-        // point of anchoring.
+        // Per-screen drag memory: if the user has previously dragged
+        // the palette on the screen where the cursor currently is,
+        // reuse that position. Otherwise cursor-center on that screen.
+        // Raycast-style: dragging on monitor A doesn't affect monitor
+        // B's position.
         #[cfg(target_os = "macos")]
-        if self.dragged_position.is_none() && self.anchored.is_none() {
-            if let Some((x, y)) =
+        {
+            let cursor_key = crate::platform::macos::cursor_screen_key();
+            let remembered = cursor_key.and_then(|k| self.dragged_positions.get(&k).copied());
+            if let Some(point) = remembered {
+                self.programmatic_move_pending = true;
+                tasks.push(iced::window::move_to(id, point));
+            } else if let Some((x, y)) =
                 crate::platform::macos::cursor_palette_position(Self::LAUNCHER_W as f64)
             {
-                // Arm the flag so the `Moved` event fired by this
-                // programmatic move doesn't get logged as a user drag.
                 self.programmatic_move_pending = true;
                 tasks.push(iced::window::move_to(
                     id,
@@ -3989,6 +3881,14 @@ impl Slashpad {
 
     fn hide_palette(&mut self) -> Task<Message> {
         self.palette_visible = false;
+        // If the user was browsing skills at dismiss time (input starts
+        // with `/`, skill list showing), next open should re-prompt
+        // with `/` rather than restoring the half-typed filter. Also
+        // catches the fire-and-forget-skill path: that handler invokes
+        // from Skills mode and calls into `hide_palette()` at the end.
+        if self.mode == Mode::Skills {
+            self.reset_to_skills_on_next_open = true;
+        }
         // Drop any dangling rename state so the row isn't still in edit
         // mode the next time the palette is summoned.
         self.renaming_session_id = None;
