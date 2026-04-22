@@ -161,7 +161,7 @@ use tokio::sync::mpsc;
 
 use crate::hotkey;
 use crate::projects::ProjectInfo;
-use crate::settings::{AppSettings, PreferredTerminal};
+use crate::settings::{AccentColor, AppSettings, PreferredTerminal};
 use crate::sidecar::{self, FollowUp, Payload, SidecarEvent, SpawnedSidecar};
 use crate::skills;
 use crate::state::{
@@ -410,6 +410,9 @@ pub enum Message {
     OpenSessionInTerminal,
     /// The user picked a new terminal from the settings dropdown.
     PreferredTerminalChanged(PreferredTerminal),
+    /// User clicked an accent color swatch in Settings. Updates the
+    /// runtime accent in `ui::theme` and persists the pick.
+    AccentColorChanged(AccentColor),
     /// User pressed the mouse down inside the invisible drag strip at
     /// the top of the palette — kick off a native OS window drag that
     /// follows the cursor until the mouse button is released.
@@ -641,6 +644,10 @@ impl Slashpad {
         // so `external_sender()` is ready for the hotkey forwarder below.
 
         let settings = AppSettings::load_or_default();
+
+        // Apply the persisted accent color before any view renders, so
+        // the first frame already reflects the user's pick.
+        ui::theme::set_accent(settings.accent_color);
 
         // Resolve the starting project path from persisted settings,
         // falling back to `~/.slashpad` if unset or if the saved path
@@ -1865,6 +1872,15 @@ impl Slashpad {
                 Task::none()
             }
 
+            Message::AccentColorChanged(color) => {
+                self.settings.accent_color = color;
+                ui::theme::set_accent(color);
+                if let Err(e) = self.settings.save() {
+                    eprintln!("[slashpad] failed to save accent color: {e}");
+                }
+                Task::none()
+            }
+
             Message::ToggleSessionMenu => {
                 // The ⌘K menu opens in three modes: Idle (sessions),
                 // Skills (skill pins), ProjectPicker (project pins).
@@ -2333,6 +2349,7 @@ impl Slashpad {
                 self.settings.load_user_settings,
                 &self.update_status,
                 self.settings.launch_at_login,
+                self.settings.accent_color,
             ))
             .padding(8)
             .width(iced::Length::Fill)

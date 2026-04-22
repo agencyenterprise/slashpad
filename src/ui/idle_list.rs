@@ -194,7 +194,7 @@ fn selection_radius(_is_first: bool, _is_last: bool) -> iced::border::Radius {
 /// intact for every row.
 fn title_color(pinned: bool) -> iced::Color {
     if pinned {
-        super::theme::ACCENT
+        super::theme::accent()
     } else {
         super::theme::TEXT
     }
@@ -229,7 +229,7 @@ fn rename_input_widget<'a>(value: &'a str, pinned: bool) -> Element<'a, Message>
             value: value_color,
             selection: iced::Color {
                 a: 0.35,
-                ..super::theme::ACCENT
+                ..super::theme::accent()
             },
         })
         .into()
@@ -249,7 +249,7 @@ fn status_text(status: ChatStatus, spinner_frame: u32, last_activity_ms: i64) ->
 
 fn status_color(status: ChatStatus) -> iced::Color {
     match status {
-        ChatStatus::Initializing | ChatStatus::Streaming => super::theme::ACCENT,
+        ChatStatus::Initializing | ChatStatus::Streaming => super::theme::accent(),
         ChatStatus::Idle | ChatStatus::Error | ChatStatus::Closed => super::theme::MUTED,
     }
 }

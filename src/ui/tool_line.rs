@@ -97,7 +97,7 @@ pub fn summary_row_streaming<'a>(
     let dot_color = if error_count > 0 {
         super::theme::DANGER
     } else {
-        super::theme::ACCENT
+        super::theme::accent()
     };
 
     let mut r = row![].spacing(8).align_y(iced::Alignment::Center);
@@ -170,7 +170,7 @@ pub fn summary_row<'a>(
     let dot_color = if summary.error_count > 0 {
         super::theme::DANGER
     } else {
-        super::theme::ACCENT
+        super::theme::accent()
     };
 
     let mut r = row![text("●").size(10).color(dot_color),]
@@ -285,7 +285,7 @@ pub fn view_expanded(block: &ContentBlock) -> Element<'_, Message> {
             let summary = summarize_args(tool, args);
 
             let mut r = row![
-                text("●").size(10).color(super::theme::ACCENT),
+                text("●").size(10).color(super::theme::accent()),
                 text(tool.as_str())
                     .size(12)
                     .color(super::theme::MUTED),

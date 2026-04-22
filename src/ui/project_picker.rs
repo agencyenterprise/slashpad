@@ -40,7 +40,7 @@ pub fn view<'a>(
         let is_selected = i == selected;
         let project = project_row.project;
         let label_color = if project_row.pinned {
-            super::theme::ACCENT
+            super::theme::accent()
         } else {
             super::theme::TEXT
         };

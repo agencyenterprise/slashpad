@@ -4,7 +4,7 @@ use iced::widget::{button, checkbox, column, container, pick_list, row, text, te
 use iced::{Element, Length};
 
 use crate::app::{Message, UpdateStatus};
-use crate::settings::PreferredTerminal;
+use crate::settings::{AccentColor, PreferredTerminal};
 
 #[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
@@ -18,9 +18,10 @@ pub fn view<'a>(
     load_user_settings: bool,
     update_status: &UpdateStatus,
     launch_at_login: bool,
+    accent_color: AccentColor,
 ) -> Element<'a, Message> {
     let mut title = row![
-        text("/slashpad").size(15).color(super::theme::ACCENT),
+        text("/slashpad").size(15).color(super::theme::accent()),
         text(format!("  v{}", env!("CARGO_PKG_VERSION")))
             .size(11)
             .color(super::theme::MUTED),
@@ -41,14 +42,14 @@ pub fn view<'a>(
                 button(
                     text(format!("  Upgrade to v{version}"))
                         .size(11)
-                        .color(super::theme::ACCENT),
+                        .color(super::theme::accent()),
                 )
                 .on_press(Message::UpgradeClicked)
                 .padding(0)
                 .style(|_, status| {
                     let text_color = match status {
                         iced::widget::button::Status::Hovered => super::theme::TEXT,
-                        _ => super::theme::ACCENT,
+                        _ => super::theme::accent(),
                     };
                     iced::widget::button::Style {
                         background: None,
@@ -99,7 +100,7 @@ pub fn view<'a>(
             value: super::theme::TEXT,
             selection: iced::Color {
                 a: 0.35,
-                ..super::theme::ACCENT
+                ..super::theme::accent()
             },
         });
 
@@ -182,14 +183,14 @@ pub fn view<'a>(
             );
             iced::widget::checkbox::Style {
                 background: iced::Background::Color(if checked {
-                    super::theme::ACCENT
+                    super::theme::accent()
                 } else {
                     super::theme::SURFACE_2
                 }),
                 icon_color: super::theme::SURFACE_0,
                 border: iced::Border {
                     color: if checked {
-                        super::theme::ACCENT
+                        super::theme::accent()
                     } else {
                         super::theme::SURFACE_3
                     },
@@ -299,14 +300,14 @@ pub fn view<'a>(
                 );
                 iced::widget::checkbox::Style {
                     background: iced::Background::Color(if checked {
-                        super::theme::ACCENT
+                        super::theme::accent()
                     } else {
                         super::theme::SURFACE_2
                     }),
                     icon_color: super::theme::SURFACE_0,
                     border: iced::Border {
                         color: if checked {
-                            super::theme::ACCENT
+                            super::theme::accent()
                         } else {
                             super::theme::SURFACE_3
                         },
@@ -325,6 +326,51 @@ pub fn view<'a>(
     ]
     .spacing(6);
 
+    // Accent swatches: four circular buttons, one per preset. The
+    // selected one wears a subtle outer ring so the pick reads even
+    // when the swatch color is close to an adjacent one.
+    let mut swatches = row![].spacing(8).align_y(iced::Alignment::Center);
+    for color in AccentColor::ALL {
+        let (r, g, b) = color.rgb();
+        let fill = iced::Color::from_rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+        let selected = color == accent_color;
+        let swatch = button(text(""))
+            .on_press(Message::AccentColorChanged(color))
+            .width(Length::Fixed(22.0))
+            .height(Length::Fixed(22.0))
+            .padding(0)
+            .style(move |_theme: &iced::Theme, status| {
+                let bg = match status {
+                    iced::widget::button::Status::Hovered => iced::Color {
+                        a: 0.85,
+                        ..fill
+                    },
+                    _ => fill,
+                };
+                iced::widget::button::Style {
+                    background: Some(iced::Background::Color(bg)),
+                    text_color: super::theme::TEXT,
+                    border: iced::Border {
+                        color: if selected {
+                            super::theme::TEXT
+                        } else {
+                            iced::Color::TRANSPARENT
+                        },
+                        width: if selected { 2.0 } else { 0.0 },
+                        radius: 11.0.into(),
+                    },
+                    ..Default::default()
+                }
+            });
+        swatches = swatches.push(swatch);
+    }
+
+    let accent_color_row = column![
+        text("Accent Color").size(11).color(super::theme::MUTED),
+        swatches,
+    ]
+    .spacing(6);
+
     let login_checkbox = checkbox("Launch at login", launch_at_login)
         .on_toggle(Message::LaunchAtLoginToggled)
         .size(14)
@@ -339,14 +385,14 @@ pub fn view<'a>(
             );
             iced::widget::checkbox::Style {
                 background: iced::Background::Color(if checked {
-                    super::theme::ACCENT
+                    super::theme::accent()
                 } else {
                     super::theme::SURFACE_2
                 }),
                 icon_color: super::theme::SURFACE_0,
                 border: iced::Border {
                     color: if checked {
-                        super::theme::ACCENT
+                        super::theme::accent()
                     } else {
                         super::theme::SURFACE_3
                     },
@@ -363,6 +409,7 @@ pub fn view<'a>(
         hotkey_row.into(),
         terminal_row.into(),
         user_settings_row.into(),
+        accent_color_row.into(),
     ];
 
     // SMAppService only works when the binary is inside a signed .app

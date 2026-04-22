@@ -33,7 +33,7 @@ pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Messag
             value: super::theme::TEXT,
             selection: iced::Color {
                 a: 0.35,
-                ..super::theme::ACCENT
+                ..super::theme::accent()
             },
         });
 

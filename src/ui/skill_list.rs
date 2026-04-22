@@ -37,7 +37,7 @@ pub fn view<'a>(
         let is_last = i == last;
         let skill = skill_row.skill;
         let name_color = if skill_row.pinned {
-            super::theme::ACCENT
+            super::theme::accent()
         } else {
             super::theme::TEXT
         };

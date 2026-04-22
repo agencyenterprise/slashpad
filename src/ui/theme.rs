@@ -7,14 +7,32 @@
 //!   surface-3: #2a2a30
 //!   accent:    #c4a1ff
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use iced::theme::Palette;
 use iced::{Color, Theme};
 
-pub const ACCENT: Color = Color::from_rgb(
-    0xc4 as f32 / 255.0,
-    0xa1 as f32 / 255.0,
-    0xff as f32 / 255.0,
-);
+use crate::settings::AccentColor;
+
+/// Packed 0x00RRGGBB accent color. Read via `accent()` at render time,
+/// written via `set_accent()` when the user picks a new color in
+/// Settings. Initialized to the purple default; `Slashpad::new`
+/// overrides this from the persisted setting before the first render.
+static ACCENT_PACKED: AtomicU32 = AtomicU32::new(0x00c4a1ff);
+
+pub fn accent() -> Color {
+    let packed = ACCENT_PACKED.load(Ordering::Relaxed);
+    let r = ((packed >> 16) & 0xff) as u8;
+    let g = ((packed >> 8) & 0xff) as u8;
+    let b = (packed & 0xff) as u8;
+    Color::from_rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
+}
+
+pub fn set_accent(c: AccentColor) {
+    let (r, g, b) = c.rgb();
+    let packed = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+    ACCENT_PACKED.store(packed, Ordering::Relaxed);
+}
 
 pub const SURFACE_0: Color = Color::from_rgb(
     0x0b as f32 / 255.0,
@@ -71,8 +89,8 @@ pub fn scrollbar_style(
 
     let scroller_color = match status {
         Status::Active => SURFACE_3,
-        Status::Hovered { .. } => Color { a: 0.75, ..ACCENT },
-        Status::Dragged { .. } => ACCENT,
+        Status::Hovered { .. } => Color { a: 0.75, ..accent() },
+        Status::Dragged { .. } => accent(),
     };
 
     let rail = Rail {
@@ -119,7 +137,7 @@ pub fn dark_theme() -> Theme {
         Palette {
             background: SURFACE_0,
             text: TEXT,
-            primary: ACCENT,
+            primary: accent(),
             success: SUCCESS,
             danger: DANGER,
         },

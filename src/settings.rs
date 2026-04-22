@@ -104,6 +104,37 @@ impl PreferredTerminal {
     }
 }
 
+/// Accent color for the palette UI. The four presets are pastels at
+/// similar luminance so the rest of the dark theme stays balanced.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AccentColor {
+    #[default]
+    Purple,
+    Blue,
+    Green,
+    Orange,
+}
+
+impl AccentColor {
+    pub const ALL: [AccentColor; 4] = [
+        AccentColor::Purple,
+        AccentColor::Blue,
+        AccentColor::Green,
+        AccentColor::Orange,
+    ];
+
+    /// Packed 0x00RRGGBB used by the runtime color atomic in `ui::theme`.
+    pub fn rgb(self) -> (u8, u8, u8) {
+        match self {
+            AccentColor::Purple => (0xc4, 0xa1, 0xff),
+            AccentColor::Blue => (0xa1, 0xc4, 0xff),
+            AccentColor::Green => (0xa1, 0xff, 0xc4),
+            AccentColor::Orange => (0xff, 0xc4, 0xa1),
+        }
+    }
+}
+
 impl fmt::Display for PreferredTerminal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
@@ -176,6 +207,10 @@ pub struct AppSettings {
     /// is preserved across relaunches.
     #[serde(default, rename = "seededDefaultSkillPin")]
     pub seeded_default_skill_pin: bool,
+    /// Accent color applied across the palette UI. Defaults to purple
+    /// so existing installs look identical after the update.
+    #[serde(default, rename = "accentColor")]
+    pub accent_color: AccentColor,
 }
 
 fn default_hotkey() -> String {
@@ -199,6 +234,7 @@ impl Default for AppSettings {
             pinned_projects: BTreeMap::new(),
             seeded_default_project_pin: false,
             seeded_default_skill_pin: false,
+            accent_color: AccentColor::default(),
         }
     }
 }
