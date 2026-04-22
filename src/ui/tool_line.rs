@@ -334,18 +334,7 @@ pub fn view_expanded(block: &ContentBlock) -> Element<'_, Message> {
                 r = r.push(text(summary).size(11).color(super::theme::MUTED));
             }
 
-            if *is_error {
-                // Surface the error text inline so users see *why* the tool
-                // failed (e.g. "permission denied", "file not found")
-                // instead of a mystery red ✗.
-                if let Some(res) = result {
-                    r = r.push(
-                        text(truncate(res, 160))
-                            .size(11)
-                            .color(super::theme::DANGER),
-                    );
-                }
-            } else if is_file_mutating(tool) {
+            if !*is_error && is_file_mutating(tool) {
                 // For file-mutating tools, try to show diff counts from the result.
                 if let Some(res) = result {
                     if let Some(diff) = parse_diff_counts(res) {
