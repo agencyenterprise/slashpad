@@ -10,5 +10,6 @@ pub mod session_options_menu;
 pub mod settings;
 pub mod shortcut_filter;
 pub mod skill_list;
+pub mod terminal_input;
 pub mod theme;
 pub mod tool_line;

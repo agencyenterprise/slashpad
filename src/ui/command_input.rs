@@ -1,11 +1,12 @@
 //! Top command input bar.
 
-use iced::widget::{container, text_input};
+use iced::widget::container;
 use iced::{Element, Length};
 
 use crate::app::{Message, Slashpad, INPUT_ID};
 use crate::state::Mode;
 use crate::ui::shortcut_filter::ShortcutFilter;
+use crate::ui::terminal_input::TerminalInput;
 
 pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Message> {
     let placeholder = match mode {
@@ -15,12 +16,17 @@ pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Messag
         _ => "Search, type / for skills, or prompt Claude Code",
     };
 
-    let input = text_input(placeholder, value)
+    let input = TerminalInput::new(placeholder, value)
         .id(INPUT_ID.clone())
         .on_input(Message::InputChanged)
         .size(15)
         .padding(12)
         .width(Length::Fill)
+        .cursor_width(8.0)
+        .cursor_color(iced::Color {
+            a: 0.85,
+            ..super::theme::accent()
+        })
         .style(|_theme: &iced::Theme, _status| iced::widget::text_input::Style {
             background: iced::Background::Color(iced::Color::TRANSPARENT),
             border: iced::Border {
