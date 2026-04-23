@@ -22,11 +22,8 @@ pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Messag
         .size(15)
         .padding(12)
         .width(Length::Fill)
-        .cursor_width(8.0)
-        .cursor_color(iced::Color {
-            a: 0.85,
-            ..super::theme::accent()
-        })
+        .cursor_width(3.0)
+        .cursor_color(super::theme::accent())
         .style(|_theme: &iced::Theme, _status| iced::widget::text_input::Style {
             background: iced::Background::Color(iced::Color::TRANSPARENT),
             border: iced::Border {
