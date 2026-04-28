@@ -172,7 +172,6 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
             vec![("↵", "Send"), ("⌘T", "Terminal"), ("esc", "Back")]
         }
         Mode::Chatting => vec![("↵", "Send"), ("esc", "Back")],
-        Mode::Settings => vec![],
     };
 
     // Actions submenu affordance: available in the three modes that
@@ -222,7 +221,7 @@ pub fn view(mode: Mode, ctx: KeyhintContext) -> Element<'static, Message> {
         bar = bar.push(hint_item(key, label));
     }
     bar = bar.push(horizontal_space().width(Length::Fill));
-    if !ctx.project_path_display.is_empty() && !matches!(mode, Mode::Settings) {
+    if !ctx.project_path_display.is_empty() {
         // Prefix the path with a ⌘P affordance so the user knows how
         // to change it. Suppressed inside the picker itself — the
         // user is already there, so the hint would just be noise.

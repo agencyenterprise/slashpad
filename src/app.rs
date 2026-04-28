@@ -335,7 +335,7 @@ pub enum Message {
     /// `~/.claude/projects/`.
     ProjectsLoaded(Vec<ProjectInfo>),
     /// Cmd+P pressed — switch to the project-picker mode and show the
-    /// cached list. No-op in `Mode::Settings`.
+    /// cached list.
     OpenProjectPicker,
     /// User clicked a row in the project picker. Carries the index
     /// into the current `filtered_projects` list.
@@ -3898,7 +3898,7 @@ impl Slashpad {
         // when the user dismissed while in Skills mode, or when a
         // skill was fire-and-forgotten.
         let force_reset = self.reset_to_skills_on_next_open
-            || matches!(self.mode, Mode::Settings | Mode::ProjectPicker)
+            || matches!(self.mode, Mode::ProjectPicker)
             || (self.mode == Mode::Chatting
                 && self
                     .active_chat_id

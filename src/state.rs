@@ -13,7 +13,6 @@ pub enum Mode {
     Idle,
     Skills,
     Chatting,
-    Settings,
     /// Cmd+P picker for switching the Claude project directory. The
     /// unfiltered list (sourced from `~/.claude/projects/`) lives on
     /// `Slashpad`; the live query is `self.input`.

@@ -43,7 +43,7 @@ There are no automated tests.
 
 ## State machine (ported from usePalette.ts)
 
-Modes: `Idle` → `Skills` (when input starts with `/`) → `Chatting` (after submit) → `Settings` (when input is exactly `/settings`). Port of the original React state machine.
+Modes: `Idle` → `Skills` (when input starts with `/`) → `Chatting` (after submit), plus `ProjectPicker` (Cmd+P). Settings is a separate iced window opened from the tray icon, not a palette mode.
 
 **Key message flows:**
 - Hotkey thread → `External::HotkeyPressed` → iced subscription → `Message::HotkeyPressed` → `toggle_palette()`.
