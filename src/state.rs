@@ -20,6 +20,17 @@ pub enum Mode {
     ProjectPicker,
 }
 
+/// Picker the user was on the *most recent* time they entered
+/// `Mode::Chatting`. Drives the Esc-out-of-chat return target. This is
+/// per-navigation, not per-chat — the same chat can be entered from
+/// either picker on different summons and Esc respects whichever route
+/// was taken this time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatOrigin {
+    Idle,
+    Skills,
+}
+
 #[derive(Debug, Clone)]
 pub struct Skill {
     pub name: String,

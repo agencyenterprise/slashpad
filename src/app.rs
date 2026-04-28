@@ -165,8 +165,8 @@ use crate::settings::{AccentColor, AppSettings, PreferredTerminal};
 use crate::sidecar::{self, FollowUp, Payload, SidecarEvent, SpawnedSidecar};
 use crate::skills;
 use crate::state::{
-    is_archived, is_pinned, new_pin_tag, pin_tag_with, pin_timestamp, ChatId, ScreenKey,
-    ChatMessageView, ChatState, ChatStatus, Mode, SessionInfo, Skill, TAG_ARCHIVED,
+    is_archived, is_pinned, new_pin_tag, pin_tag_with, pin_timestamp, ChatId, ChatOrigin,
+    ScreenKey, ChatMessageView, ChatState, ChatStatus, Mode, SessionInfo, Skill, TAG_ARCHIVED,
 };
 use crate::ui;
 
@@ -609,11 +609,18 @@ pub struct Slashpad {
     pub programmatic_move_pending: bool,
     /// When true, the next `show_palette()` forces the palette back to
     /// `Mode::Skills` with `/` prefilled instead of restoring the
-    /// previous view. Set when the palette hides while in Skills mode
-    /// or when a skill is fired-and-forgotten (Cmd+Enter) — both cases
-    /// where bringing back the same view would be stale. Cleared on
-    /// open after being consumed.
+    /// previous view. Set on first launch and after fire-and-forget
+    /// (`start_chat_detached`) — the cases where bringing back the
+    /// previous input would be stale. Plain dismiss does NOT set this.
+    /// Cleared on open after being consumed.
     pub reset_to_skills_on_next_open: bool,
+
+    /// Picker to land back in when the user presses Esc out of
+    /// `Mode::Chatting`. Updated on every transition into
+    /// `Mode::Chatting` so it always reflects the most recent entry
+    /// route — clicking a chat from the idle list sets `Idle`,
+    /// running a slash-skill sets `Skills`, etc.
+    pub chat_return_mode: ChatOrigin,
 
     /// Update check / upgrade lifecycle state. Driven by the settings
     /// title row — checked on each settings-window open.
@@ -741,6 +748,7 @@ impl Slashpad {
             // user sees the picker immediately. Future opens restore
             // whatever view they were in when the palette was hidden.
             reset_to_skills_on_next_open: true,
+            chat_return_mode: ChatOrigin::Idle,
             update_status: UpdateStatus::Idle,
         };
 
@@ -1200,21 +1208,40 @@ impl Slashpad {
                         snap_to_selection(IDLE_LIST_SCROLL_ID.clone(), 0, self.idle_row_count()),
                     ]);
                 }
-                // In Chatting mode, Esc steps back to the idle thread
-                // list instead of dismissing. The sidecar keeps streaming
-                // in the background and the entry stays in `self.chats`,
-                // so the user can pick a different chat (or re-enter this
-                // one) from the list. A second Esc from the idle list
-                // dismisses the palette.
+                // In Chatting mode, Esc steps back to whichever picker
+                // the user *navigated in from* — the idle list (default)
+                // or the skills picker. Per-navigation, not per-chat:
+                // resuming a chat from Idle and Escing returns to Idle
+                // even if it was originally launched from a slash skill.
+                // The sidecar keeps streaming in the background and the
+                // entry stays in `self.chats`, so the user can pick a
+                // different chat (or re-enter this one) from the list.
+                // A second Esc dismisses the palette.
                 if self.mode == Mode::Chatting {
                     self.active_chat_id = None;
-                    self.mode = Mode::Idle;
-                    self.input.clear();
-                    self.selected_idle_index = 0;
-                    return Task::batch([
-                        text_input::focus(INPUT_ID.clone()),
-                        snap_to_selection(IDLE_LIST_SCROLL_ID.clone(), 0, self.idle_row_count()),
-                    ]);
+                    match self.chat_return_mode {
+                        ChatOrigin::Skills => {
+                            self.mode = Mode::Skills;
+                            self.input = "/".to_string();
+                            self.filtered_skills = self.all_skills.clone();
+                            self.apply_pinned_skill_sort();
+                            self.selected_skill_index = 0;
+                            return text_input::focus(INPUT_ID.clone());
+                        }
+                        ChatOrigin::Idle => {
+                            self.mode = Mode::Idle;
+                            self.input.clear();
+                            self.selected_idle_index = 0;
+                            return Task::batch([
+                                text_input::focus(INPUT_ID.clone()),
+                                snap_to_selection(
+                                    IDLE_LIST_SCROLL_ID.clone(),
+                                    0,
+                                    self.idle_row_count(),
+                                ),
+                            ]);
+                        }
+                    }
                 }
                 self.hide_palette()
             }
@@ -1389,6 +1416,7 @@ impl Slashpad {
                     entry.scroll.autoscroll = true;
                     self.active_chat_id = Some(chat_id);
                     self.mode = Mode::Chatting;
+                    self.chat_return_mode = ChatOrigin::Idle;
                     self.input.clear();
                     Task::batch([
                         text_input::focus(INPUT_ID.clone()),
@@ -2745,7 +2773,10 @@ impl Slashpad {
                         } else {
                             // No session_id yet (interrupted during init) —
                             // can't resume, so start a brand new chat.
-                            self.start_chat(content)
+                            // Preserve the current return mode (we're
+                            // already in Chatting, so it reflects how the
+                            // user navved in).
+                            self.start_chat(content, self.chat_return_mode)
                         }
                     }
                     _ => Task::none(),
@@ -2757,7 +2788,7 @@ impl Slashpad {
                 // Enter runs it. Otherwise Enter autocompletes the
                 // currently-selected filter match into the input.
                 if self.locked_skill().is_some() {
-                    self.start_chat(self.input.trim().to_string())
+                    self.start_chat(self.input.trim().to_string(), ChatOrigin::Skills)
                 } else if let Some(skill) =
                     self.filtered_skills.get(self.selected_skill_index).cloned()
                 {
@@ -2856,6 +2887,7 @@ impl Slashpad {
                             entry.scroll.autoscroll = true;
                             self.active_chat_id = Some(cid);
                             self.mode = Mode::Chatting;
+                            self.chat_return_mode = ChatOrigin::Idle;
                             self.input.clear();
                             Task::batch([
                                 text_input::focus(INPUT_ID.clone()),
@@ -2874,13 +2906,14 @@ impl Slashpad {
             }
             _ if !self.input.trim().is_empty() && !self.input.starts_with('/') => {
                 let prompt = self.input.trim().to_string();
-                self.start_chat(prompt)
+                self.start_chat(prompt, ChatOrigin::Idle)
             }
             _ => Task::none(),
         }
     }
 
-    fn start_chat(&mut self, prompt: String) -> Task<Message> {
+    fn start_chat(&mut self, prompt: String, origin: ChatOrigin) -> Task<Message> {
+        self.chat_return_mode = origin;
         let chat_id = self.alloc_chat_id();
         let spawned = match self.spawn_sidecar_chat(chat_id, prompt.clone(), None) {
             Ok(s) => s,
@@ -2960,10 +2993,16 @@ impl Slashpad {
             }
         }
         self.input.clear();
+        // Fire-and-forget intentionally schedules a fresh `/` skill
+        // picker on the next palette summon (regardless of which mode
+        // the user submitted from). Plain Esc/dismiss does NOT.
+        self.reset_to_skills_on_next_open = true;
         self.hide_palette()
     }
 
     fn resume_session(&mut self, info: SessionInfo) -> Task<Message> {
+        // Resume always navs in from the idle list.
+        self.chat_return_mode = ChatOrigin::Idle;
         // If we already have an active chat tracking this session id,
         // just switch to it instead of creating a duplicate entry.
         if let Some((&existing, _)) = self
@@ -3927,14 +3966,10 @@ impl Slashpad {
 
     fn hide_palette(&mut self) -> Task<Message> {
         self.palette_visible = false;
-        // If the user was browsing skills at dismiss time (input starts
-        // with `/`, skill list showing), next open should re-prompt
-        // with `/` rather than restoring the half-typed filter. Also
-        // catches the fire-and-forget-skill path: that handler invokes
-        // from Skills mode and calls into `hide_palette()` at the end.
-        if self.mode == Mode::Skills {
-            self.reset_to_skills_on_next_open = true;
-        }
+        // Note: a plain dismiss does NOT reset to `/` on next open —
+        // the user's last input/mode is preserved. Only fire-and-forget
+        // (`start_chat_detached`) explicitly sets
+        // `reset_to_skills_on_next_open` before calling us.
         // Drop any dangling rename state so the row isn't still in edit
         // mode the next time the palette is summoned.
         self.renaming_session_id = None;
