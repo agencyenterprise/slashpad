@@ -250,14 +250,15 @@ pub fn view<'a>(
             ..Default::default()
         });
 
-    let mut hotkey_row = column![
+    let mut hotkey_col = column![
         text("Global Hotkey").size(11).color(super::theme::MUTED),
         hotkey_button,
     ]
-    .spacing(6);
+    .spacing(6)
+    .width(Length::Fill);
 
     if let Some(err) = hotkey_error {
-        hotkey_row = hotkey_row.push(text(err.to_string()).size(11).color(super::theme::DANGER));
+        hotkey_col = hotkey_col.push(text(err.to_string()).size(11).color(super::theme::DANGER));
     }
 
     let terminal_picker = pick_list(
@@ -267,6 +268,7 @@ pub fn view<'a>(
     )
     .text_size(13)
     .padding([8, 14])
+    .width(Length::Fill)
     .style(|_theme: &iced::Theme, _status| iced::widget::pick_list::Style {
         text_color: super::theme::TEXT,
         placeholder_color: super::theme::MUTED,
@@ -279,11 +281,16 @@ pub fn view<'a>(
         },
     });
 
-    let terminal_row = column![
+    let terminal_col = column![
         text("Preferred Terminal").size(11).color(super::theme::MUTED),
         terminal_picker,
     ]
-    .spacing(6);
+    .spacing(6)
+    .width(Length::Fill);
+
+    let hotkey_terminal_row = row![hotkey_col, terminal_col]
+        .spacing(12)
+        .align_y(iced::Alignment::Start);
 
     let user_settings_checkbox =
         checkbox("Load user-level Claude settings & skills", load_user_settings)
@@ -406,8 +413,7 @@ pub fn view<'a>(
     let mut body_items: Vec<Element<'a, Message>> = vec![
         title.into(),
         api_row.into(),
-        hotkey_row.into(),
-        terminal_row.into(),
+        hotkey_terminal_row.into(),
         user_settings_row.into(),
         accent_color_row.into(),
     ];
