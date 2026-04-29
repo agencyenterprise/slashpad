@@ -20,7 +20,7 @@ pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Messag
         .id(INPUT_ID.clone())
         .on_input(Message::InputChanged)
         .size(15)
-        .padding(12)
+        .padding(8)
         .width(Length::Fill)
         .cursor_width(3.0)
         .cursor_color(super::theme::accent())
@@ -49,7 +49,7 @@ pub fn view(value: &str, mode: Mode, is_agent_ready: bool) -> Element<'_, Messag
     let input = ShortcutFilter::new(input, Slashpad::should_filter_launcher_keypress);
 
     container(input)
-        .padding(12)
+        .padding(iced::Padding::from([6, 10]))
         .width(Length::Fill)
         .style(|_theme: &iced::Theme| iced::widget::container::Style {
             background: None,

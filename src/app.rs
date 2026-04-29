@@ -2412,7 +2412,7 @@ impl Slashpad {
         // the fixed-height window. `Length::Fill` inside a `Shrink` parent
         // collapses to 0, so we have to make the whole vertical chain
         // (container → card → stack) `Length::Fill` end-to-end.
-        let mut body: Column<'_, Message> = column![drag_strip, input]
+        let mut body: Column<'_, Message> = column![drag_strip, input, ui::theme::divider()]
             .spacing(0)
             .height(iced::Length::Fill);
 
@@ -2430,7 +2430,6 @@ impl Slashpad {
                 // list or — worse — "No matching skills" as soon as
                 // the user starts typing a natural-language argument.
                 if self.locked_skill().is_none() {
-                    body = body.push(ui::theme::divider());
                     let skill_rows: Vec<ui::skill_list::SkillRow<'_>> = self
                         .filtered_skills
                         .iter()
@@ -2448,7 +2447,6 @@ impl Slashpad {
                 }
             }
             Mode::ProjectPicker => {
-                body = body.push(ui::theme::divider());
                 let project_rows: Vec<ui::project_picker::ProjectRow<'_>> = self
                     .filtered_projects
                     .iter()
@@ -2515,7 +2513,6 @@ impl Slashpad {
                 } else {
                     usize::MAX
                 };
-                body = body.push(ui::theme::divider());
                 body = body.push(ui::idle_list::view(
                     rows,
                     selected,
@@ -2532,7 +2529,6 @@ impl Slashpad {
                         entry.state.status,
                         ChatStatus::Idle | ChatStatus::Closed | ChatStatus::Error
                     );
-                    body = body.push(ui::theme::divider());
                     body = body.push(ui::chat_panel::view(
                         &entry.state.messages,
                         is_generating,
